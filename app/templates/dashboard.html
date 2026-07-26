@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERP Básico · e-auto</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    .cockpit-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    @media (max-width:860px){.cockpit-grid{grid-template-columns:1fr}}
+    .cockpit-panel{border:1px solid #1c1c1c;border-radius:var(--radius);background:#0f0f0f;padding:16px;display:flex;flex-direction:column;min-height:250px}
+    .cockpit-phead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+    .cockpit-table{width:100%;border-collapse:collapse;font-size:12.5px}
+    .cockpit-table th.sortable{padding:9px 10px;cursor:pointer;user-select:none;color:var(--slate);font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;text-align:left;white-space:nowrap}
+    .cockpit-table th.r{text-align:right}
+    .cockpit-table td{padding:9px 10px;border-top:1px solid #161616;vertical-align:top}
+    .cockpit-table td.r{text-align:right;font-family:var(--mono);white-space:nowrap}
+    .cockpit-table td.mono{font-family:var(--mono);white-space:nowrap}
+    .cockpit-scroll{overflow:auto;max-height:270px;margin-top:2px}
+    .cockpit-side-btn{font-family:var(--mono);font-size:10px;letter-spacing:.04em;text-transform:uppercase;padding:6px 11px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700;white-space:nowrap}
+    .cockpit-empty{color:var(--slate);font-size:13px;margin:auto;padding:26px 0;text-align:center}
+    .footer-btns{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}
+    .footer-btn{display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:12px 18px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--snow);font-weight:700}
+    .footer-btn:hover{border-color:var(--green);color:var(--green)}
+    .folio-link{font-weight:700;font-family:var(--mono)}
+    .cockpit-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+    .sii-btn{background:var(--green);color:#fff;border:none;padding:12px 18px;border-radius:var(--radius);font-weight:700;font-size:13px;letter-spacing:.02em;cursor:pointer;white-space:nowrap}
+    .sii-btn:hover{background:var(--green-deep)}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="https://www.e-auto.global/assets/logos/eauto_logo_new.webp" alt="e-auto">
+      <div class="divider"></div>
+      <span class="tag">ERP Básico</span>
+    </div>
+    <div class="userchip">
+      <span>Conectado al SII · {{ rut }}</span>
+      <form method="post" action="/logout">
+        <button type="submit">Salir</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="head cockpit-head">
+      <div>
+        <div class="eyebrow">Cockpit</div>
+        <h1>Panel de control</h1>
+        <p>Lo urgente de un vistazo: rechazos, pagos y cobros vencidos, y rendiciones por pagar.</p>
+      </div>
+      <div style="text-align:right">
+        <form method="post" action="/sync">
+          <input type="hidden" name="volver" value="/">
+          <button type="submit" class="sii-btn">↻ Actualizar con SII</button>
+        </form>
+        {% if sync and sync.corriendo %}
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--slate);margin-top:8px">Descargando PDFs…</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="cockpit-grid">
+
+      <!-- Cuadro 1 · Facturas rechazadas -->
+      <section class="cockpit-panel">
+        <div class="cockpit-phead">
+          <div class="eyebrow" style="color:var(--red)">Facturas rechazadas</div>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--slate)">{{ rechazadas|length }}</span>
+        </div>
+        {% if rechazadas %}
+        <div class="cockpit-scroll">
+          <table class="cockpit-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-col="0" data-type="num">Folio <span class="arrow"></span></th>
+                <th class="sortable" data-col="1" data-type="text">Emisor <span class="arrow"></span></th>
+                <th class="sortable" data-col="2" data-type="text">Fecha <span class="arrow"></span></th>
+                <th class="sortable r" data-col="3" data-type="num">Monto <span class="arrow"></span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in rechazadas %}
+              <tr>
+                <td class="mono" data-value="{{ f['folio'] }}">
+                  {% if f['pdf_path'] %}<a class="folio-link" style="color:var(--red)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}<span style="color:var(--red)">{{ f['folio'] }}</span>{% endif %}
+                </td>
+                <td>{{ f['razon_social'] }}</td>
+                <td class="mono" data-value="{{ f['fecha_emision'] or '' }}">{{ f['fecha_emision'] }}</td>
+                <td class="r" data-value="{{ f['total'] }}">${{ "{:,.0f}".format(f['total']).replace(",", ".") }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="cockpit-empty">Sin facturas rechazadas.</div>
+        {% endif %}
+      </section>
+
+      <!-- Cuadro 2 · Pagos vencidos -->
+      <section class="cockpit-panel">
+        <div class="cockpit-phead">
+          <div class="eyebrow">Pagos vencidos</div>
+          <a class="cockpit-side-btn" href="/pagos/proveedores">Pago Proveedores →</a>
+        </div>
+        {% if pagos_vencidos %}
+        <div class="cockpit-scroll">
+          <table class="cockpit-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-col="0" data-type="num">Folio <span class="arrow"></span></th>
+                <th class="sortable" data-col="1" data-type="text">Proveedor <span class="arrow"></span></th>
+                <th class="sortable" data-col="2" data-type="text">Fecha tope <span class="arrow"></span></th>
+                <th class="sortable r" data-col="3" data-type="num">Pendiente <span class="arrow"></span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in pagos_vencidos %}
+              <tr>
+                <td class="mono" data-value="{{ f['folio'] }}">
+                  {% if f['pdf_path'] %}<a class="folio-link" style="color:var(--green)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}{{ f['folio'] }}{% endif %}
+                </td>
+                <td>{{ f['razon_social'] }}</td>
+                <td class="mono" data-value="{{ f['fecha_pago_tope'] or '' }}" style="color:var(--red)">{{ f['fecha_pago_tope'] }}</td>
+                <td class="r" data-value="{{ f['pendiente'] }}">${{ "{:,.0f}".format(f['pendiente']).replace(",", ".") }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="cockpit-empty">Sin pagos vencidos.</div>
+        {% endif %}
+      </section>
+
+      <!-- Cuadro 3 · Cobranza vencida -->
+      <section class="cockpit-panel">
+        <div class="cockpit-phead">
+          <div class="eyebrow">Cobranza vencida</div>
+          <a class="cockpit-side-btn" href="/pagos/ingresos">Ingresar Pagos →</a>
+        </div>
+        {% if cobranza_vencida %}
+        <div class="cockpit-scroll">
+          <table class="cockpit-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-col="0" data-type="num">Folio <span class="arrow"></span></th>
+                <th class="sortable" data-col="1" data-type="text">Cliente <span class="arrow"></span></th>
+                <th class="sortable" data-col="2" data-type="text">Fecha tope <span class="arrow"></span></th>
+                <th class="sortable r" data-col="3" data-type="num">Pendiente <span class="arrow"></span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in cobranza_vencida %}
+              <tr>
+                <td class="mono" data-value="{{ f['folio'] }}">
+                  {% if f['pdf_path'] %}<a class="folio-link" style="color:var(--green)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}{{ f['folio'] }}{% endif %}
+                </td>
+                <td>{{ f['razon_social'] }}</td>
+                <td class="mono" data-value="{{ f['fecha_pago_tope'] or '' }}" style="color:var(--red)">{{ f['fecha_pago_tope'] }}</td>
+                <td class="r" data-value="{{ f['pendiente'] }}">${{ "{:,.0f}".format(f['pendiente']).replace(",", ".") }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="cockpit-empty">Sin cobranzas vencidas.</div>
+        {% endif %}
+      </section>
+
+      <!-- Cuadro 4 · Rendiciones pendientes de pago -->
+      <section class="cockpit-panel">
+        <div class="cockpit-phead">
+          <div class="eyebrow">Rendiciones pendientes de pago</div>
+          <a class="cockpit-side-btn" href="/pagos/rendiciones">Ingresar pagos →</a>
+        </div>
+        {% if rendiciones_pend %}
+        <div class="cockpit-scroll">
+          <table class="cockpit-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-col="0" data-type="text">Nombre <span class="arrow"></span></th>
+                <th class="sortable" data-col="1" data-type="text">Fecha <span class="arrow"></span></th>
+                <th class="sortable r" data-col="2" data-type="num">Por pagar <span class="arrow"></span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in rendiciones_pend %}
+              <tr>
+                <td>
+                  <a class="folio-link" style="color:var(--green)" href="/pagos/rendiciones/{{ r['id'] }}/pdf" target="_blank">{{ r['nombre'] }}</a>
+                </td>
+                <td class="mono" data-value="{{ r['fecha'] or '' }}">{{ r['fecha'] }}</td>
+                <td class="r" data-value="{{ r['saldo'] }}">${{ "{:,.0f}".format(r['saldo']).replace(",", ".") }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="cockpit-empty">Sin rendiciones pendientes.</div>
+        {% endif %}
+      </section>
+
+    </div>
+
+    <!-- Botones al pie -->
+    <div class="footer-btns">
+      <a class="footer-btn" href="/export">Export Compra/Venta y Rendiciones</a>
+      <a class="footer-btn" href="/recibidas">Facturas recibidas</a>
+      <a class="footer-btn" href="/emitidas">Facturas enviadas</a>
+    </div>
+  </main>
+
+  <script>
+    document.querySelectorAll("table.cockpit-table").forEach(function (tabla) {
+      var tbody = tabla.tBodies[0];
+      if (!tbody) return;
+      var cabeceras = tabla.querySelectorAll("th.sortable");
+      function valorCelda(fila, col, tipo) {
+        var celda = fila.children[col];
+        var v = celda.getAttribute("data-value");
+        if (v === null) v = celda.textContent.trim();
+        return tipo === "num" ? parseFloat(v) || 0 : v.toLowerCase();
+      }
+      function ordenar(col, tipo, asc) {
+        var filas = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
+        filas.sort(function (a, b) {
+          var va = valorCelda(a, col, tipo), vb = valorCelda(b, col, tipo);
+          if (va < vb) return asc ? -1 : 1;
+          if (va > vb) return asc ? 1 : -1;
+          return 0;
+        });
+        filas.forEach(function (f) { tbody.appendChild(f); });
+      }
+      cabeceras.forEach(function (th) {
+        th.addEventListener("click", function () {
+          var col = parseInt(th.getAttribute("data-col"), 10);
+          var tipo = th.getAttribute("data-type");
+          var asc = th.getAttribute("data-dir") !== "asc";
+          cabeceras.forEach(function (o) {
+            o.removeAttribute("data-dir");
+            var fl = o.querySelector(".arrow"); if (fl) fl.textContent = "";
+          });
+          th.setAttribute("data-dir", asc ? "asc" : "desc");
+          var flecha = th.querySelector(".arrow");
+          if (flecha) flecha.textContent = asc ? " ▲" : " ▼";
+          ordenar(col, tipo, asc);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

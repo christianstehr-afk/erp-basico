@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERP Básico · Rendiciones</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="https://www.e-auto.global/assets/logos/eauto_logo_new.webp" alt="e-auto">
+      <div class="divider"></div>
+      <span class="tag">ERP Básico</span>
+    </div>
+    <div class="userchip">
+      <span>Conectado al SII · {{ rut }}</span>
+      <form method="post" action="/logout">
+        <button type="submit">Salir</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="head">
+      <div class="eyebrow"><a href="/" style="color:var(--slate)">← Cockpit</a></div>
+      <h1>Rendiciones</h1>
+      <p>
+        {{ filas|length }} rendicion{{ 'es' if filas|length != 1 else '' }} ·
+        pendiente de pago ${{ "{:,.0f}".format(total_pendiente).replace(",", ".") }} de
+        ${{ "{:,.0f}".format(total_monto).replace(",", ".") }}
+      </p>
+      {% if filas %}
+      <p style="margin-top:10px;font-family:var(--mono);font-size:11px;letter-spacing:.04em">
+        <span style="color:var(--green)">● Pagada</span>&nbsp;&nbsp;
+        <span style="color:#3b82f6">● Pendiente</span>
+      </p>
+      {% endif %}
+      <div style="margin-top:14px">
+        <a href="/pagos/rendiciones/nueva"
+           style="display:inline-block;background:var(--green);color:#fff;padding:10px 16px;border-radius:var(--radius);font-weight:700;font-size:13px">+ Agregar nueva rendición</a>
+      </div>
+    </div>
+
+    {% if filas %}
+    <div style="overflow:auto;border:1px solid #1c1c1c;border-radius:var(--radius)">
+      <table id="tabla-rend" style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="text-align:left;color:var(--slate);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em">
+            <th class="sortable" data-col="0" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Nombre <span class="arrow"></span></th>
+            <th class="sortable" data-col="1" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha <span class="arrow"></span></th>
+            <th class="sortable" data-col="2" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Total <span class="arrow"></span></th>
+            <th class="sortable" data-col="3" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Pagado <span class="arrow"></span></th>
+            <th class="sortable" data-col="4" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
+            <th style="padding:12px 14px">Adjuntos</th>
+            <th style="padding:12px 14px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in filas %}
+          {% set pagada = f["pagado"] >= f["total"] and f["total"] > 0 %}
+          {% set color = 'var(--green)' if pagada else '#3b82f6' %}
+          <tr style="border-top:1px solid #161616">
+            <td style="padding:11px 14px"><span style="font-family:var(--mono);font-size:11px;color:var(--slate);margin-right:8px">R-{{ '%04d'|format(f['id']) }}</span>{{ f["nombre"] }}</td>
+            <td data-value="{{ f['fecha'] or '' }}" style="padding:11px 14px;font-family:var(--mono)">{{ f["fecha"] }}</td>
+            <td data-value="{{ f['total'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono)">${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}</td>
+            <td data-value="{{ f['pagado'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">${{ "{:,.0f}".format(f["pagado"]).replace(",", ".") }}</td>
+            <td data-value="{{ 1 if pagada else 0 }}" style="padding:11px 14px">
+              <span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;
+                background:{{ 'rgba(0,148,6,.15)' if pagada else 'rgba(59,130,246,.15)' }};color:{{ color }}">
+                {{ 'Pagada' if pagada else 'Pendiente' }}
+              </span>
+            </td>
+            <td style="padding:11px 14px;font-family:var(--mono);color:var(--slate)">
+              {% if f["n_adjuntos"] %}{{ f["n_adjuntos"] }} archivo{{ 's' if f["n_adjuntos"] != 1 else '' }}{% else %}—{% endif %}
+            </td>
+            <td style="padding:11px 14px">
+              <a href="/pagos/rendiciones/{{ f['id'] }}"
+                 style="display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:6px 12px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">Gestionar</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div style="border:1px dashed #2b2b2b;border-radius:var(--radius);padding:40px;text-align:center;color:var(--slate)">
+      Aún no hay rendiciones. Crea la primera con “+ Agregar nueva rendición”.
+    </div>
+    {% endif %}
+  </main>
+
+  <script>
+    (function () {
+      var tabla = document.getElementById("tabla-rend");
+      if (!tabla) return;
+      var tbody = tabla.tBodies[0];
+      var cabeceras = tabla.querySelectorAll("th.sortable");
+      function valorCelda(fila, col, tipo) {
+        var celda = fila.children[col];
+        var v = celda.getAttribute("data-value");
+        if (v === null) v = celda.textContent.trim();
+        return tipo === "num" ? parseFloat(v) || 0 : v.toLowerCase();
+      }
+      function ordenar(col, tipo, asc) {
+        var filas = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
+        filas.sort(function (a, b) {
+          var va = valorCelda(a, col, tipo), vb = valorCelda(b, col, tipo);
+          if (va < vb) return asc ? -1 : 1;
+          if (va > vb) return asc ? 1 : -1;
+          return 0;
+        });
+        filas.forEach(function (f) { tbody.appendChild(f); });
+      }
+      cabeceras.forEach(function (th) {
+        th.addEventListener("click", function () {
+          var col = parseInt(th.getAttribute("data-col"), 10);
+          var tipo = th.getAttribute("data-type");
+          var asc = th.getAttribute("data-dir") !== "asc";
+          cabeceras.forEach(function (o) {
+            o.removeAttribute("data-dir");
+            var fl = o.querySelector(".arrow"); if (fl) fl.textContent = "";
+          });
+          th.setAttribute("data-dir", asc ? "asc" : "desc");
+          var flecha = th.querySelector(".arrow");
+          if (flecha) flecha.textContent = asc ? " ▲" : " ▼";
+          ordenar(col, tipo, asc);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,181 @@
+"""
+Documentos del sistema de facturación gratuito del SII: recibidos y emitidos.
+
+Ambos comparten la misma estructura de tabla (8 columnas) y el mismo detalle
+(mipeGesDoc*.cgi?CODIGO=...). Solo cambian el CGI de la lista y el primer
+parámetro de filtro:
+
+  - Recibidos: mipeAdminDocsRcp.cgi, primer parámetro RUT_EMI (emisor).
+  - Emitidos:  mipeAdminDocsEmi.cgi, primer parámetro RUT_RECP (receptor).
+
+La columna 1 es la contraparte (emisor en recibidos, receptor en emitidos); se
+guarda de forma neutra como `rut_contraparte` + `razon_social`.
+
+PDF: los recibidos se obtienen con mipeShowPdf.cgi?CODIGO=... Los emitidos usan
+otra ruta (aún por definir), por eso `descargar_pdf` solo aplica a recibidos.
+
+La página del SII viene en codificación ISO-8859-1 (latin-1).
+"""
+from __future__ import annotations
+
+import re
+import unicodedata
+from pathlib import Path
+
+import requests
+from bs4 import BeautifulSoup
+
+BASE = "https://www1.sii.cl/cgi-bin/Portal001/"
+DETALLE_RE = re.compile(r"mipeGesDoc")
+CODIGO_RE = re.compile(r"CODIGO=(\d+)")
+
+# Configuración por fuente de documentos.
+#   url / primer_param: lista de documentos (mipeAdminDocs*.cgi).
+#   pdf_url / pdf_param: endpoint del PDF (distinto en recibidos vs emitidos).
+FUENTES = {
+    "recibidos": {
+        "url": BASE + "mipeAdminDocsRcp.cgi", "primer_param": "RUT_EMI", "tipo": "compra",
+        "pdf_url": BASE + "mipeShowPdf.cgi", "pdf_param": "CODIGO",
+    },
+    "emitidos": {
+        "url": BASE + "mipeAdminDocsEmi.cgi", "primer_param": "RUT_RECP", "tipo": "venta",
+        "pdf_url": BASE + "mipeDisplayPDF.cgi", "pdf_param": "DHDR_CODIGO",
+    },
+}
+
+# Texto del tipo de documento -> código DTE del SII
+TIPOS_DTE = {
+    "factura electronica": 33,
+    "factura no afecta o exenta electronica": 34,
+    "factura exenta electronica": 34,
+    "nota de credito electronica": 61,
+    "nota de debito electronica": 56,
+    "guia de despacho electronica": 52,
+    "factura de compra electronica": 46,
+    "liquidacion factura electronica": 43,
+}
+
+
+def _norm(texto: str) -> str:
+    s = unicodedata.normalize("NFKD", texto or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return s.strip().lower()
+
+
+def _solo_digitos(texto: str) -> int:
+    n = re.sub(r"[^0-9]", "", texto or "")
+    return int(n) if n else 0
+
+
+def _texto_propio(celda) -> str:
+    """Texto de una celda EXCLUYENDO el contenido de celdas <td> anidadas.
+
+    El HTML del SII deja el <td> de la contraparte sin cerrar, y html.parser
+    anida las celdas siguientes dentro de él. Tomando solo el texto anterior a
+    la primera celda anidada, obtenemos el valor real de la celda.
+    """
+    partes: list[str] = []
+    for hijo in celda.children:
+        nombre = getattr(hijo, "name", None)
+        if nombre == "td":
+            break  # desde aquí es una celda anidada (continuación de la fila)
+        if isinstance(hijo, str):
+            partes.append(hijo)
+        elif nombre is not None:
+            partes.append(hijo.get_text(" ", strip=True))
+    return " ".join(" ".join(partes).split())
+
+
+def tipo_dte(documento_texto: str) -> int | None:
+    return TIPOS_DTE.get(_norm(documento_texto))
+
+
+def parse_lista(html: str) -> list[dict]:
+    """Extrae las filas de la tabla de documentos (recibidos o emitidos)."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    tabla = None
+    for t in soup.find_all("table"):
+        if t.find("a", href=DETALLE_RE):
+            tabla = t
+            break
+    if tabla is None:
+        return []
+
+    filas: list[dict] = []
+    for tr in tabla.find_all("tr"):
+        enlace = tr.find("a", href=DETALLE_RE)
+        if not enlace:
+            continue
+        m = CODIGO_RE.search(enlace.get("href", ""))
+        if not m:
+            continue
+        celdas = tr.find_all("td")
+        if len(celdas) < 8:
+            continue
+        texto = [_texto_propio(c) for c in celdas]
+        # 0=Ver 1=Contraparte(RUT) 2=RazonSocial 3=Documento 4=Folio 5=Fecha 6=Monto 7=Estado
+        documento = texto[3]
+        filas.append(
+            {
+                "codigo": m.group(1),
+                "rut_contraparte": texto[1],
+                "razon_social": texto[2],
+                "documento": documento,
+                "tipo_dte": tipo_dte(documento),
+                "folio": _solo_digitos(texto[4]),
+                "fecha": texto[5],
+                "monto": _solo_digitos(texto[6]),
+                "estado": texto[7],
+            }
+        )
+    return filas
+
+
+def obtener_documentos(
+    session: requests.Session, fuente: str, anio: int = 2026, max_paginas: int = 50
+) -> list[dict]:
+    """Recorre las páginas y devuelve los documentos del año dado.
+
+    `fuente` es 'recibidos' o 'emitidos'. La lista viene por fecha descendente,
+    así que en cuanto una página completa queda bajo el año buscado, se detiene.
+    """
+    cfg = FUENTES[fuente]
+    docs: list[dict] = []
+    desde = f"{anio}-01-01"
+    otros = ["FOLIO", "RZN_SOC", "FEC_DESDE", "FEC_HASTA", "TPO_DOC", "ESTADO", "ORDEN"]
+    for pagina in range(1, max_paginas + 1):
+        params = {cfg["primer_param"]: ""}
+        params.update({k: "" for k in otros})
+        params["NUM_PAG"] = pagina
+        resp = session.get(cfg["url"], params=params, timeout=60)
+        html = resp.content.decode("iso-8859-1", "replace")
+        filas = parse_lista(html)
+        if not filas:
+            break
+        docs.extend(f for f in filas if (f["fecha"] or "").startswith(str(anio)))
+        fechas = [f["fecha"] for f in filas if f["fecha"]]
+        if fechas and max(fechas) < desde:
+            break
+    return docs
+
+
+def descargar_pdf(
+    session: requests.Session, fuente: str, codigo: str, destino_dir: Path
+) -> str | None:
+    """Descarga el PDF del documento y lo guarda como <codigo>.pdf.
+
+    Cada fuente usa su propio endpoint:
+      - recibidos: mipeShowPdf.cgi?CODIGO=...
+      - emitidos:  mipeDisplayPDF.cgi?DHDR_CODIGO=...
+    """
+    cfg = FUENTES[fuente]
+    destino_dir.mkdir(parents=True, exist_ok=True)
+    ruta = destino_dir / f"{codigo}.pdf"
+    if ruta.exists() and ruta.stat().st_size > 0:
+        return str(ruta)
+    resp = session.get(cfg["pdf_url"], params={cfg["pdf_param"]: codigo}, timeout=60)
+    if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
+        ruta.write_bytes(resp.content)
+        return str(ruta)
+    return None
