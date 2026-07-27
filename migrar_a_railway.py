@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
 """
-Migración ÚNICA: pasa rendiciones, pagos/cobros de facturas y fechas tope
-editadas desde la app LOCAL (tu Mac) a la app en RAILWAY (producción).
+Migración: pasa rendiciones, pagos/cobros de facturas y fechas tope editadas
+desde la app LOCAL (tu Mac) a la app en RAILWAY (producción).
+
+Es SEGURO correr este script varias veces: antes de crear nada, revisa qué
+rendiciones ya existen en Railway (por nombre+fecha) y no las vuelve a crear
+ni les vuelve a subir los adjuntos; solo reintenta los pagos/cobros de
+factura que aún no se hayan migrado con éxito en una corrida anterior
+-- pero OJO: si un pago YA se migró bien, volver a correr el script lo
+migraría de nuevo (quedaría duplicado). Este script no lleva registro de qué
+pagos individuales ya se migraron, así que solo vuelve a correrlo si la
+corrida anterior reportó pagos "sin factura" (no migrados) y ya sincronizaste
+esas facturas — no lo corras "por si acaso" una vez que ya haya reportado
+pagos migrados con éxito.
 
 Requisitos antes de correrlo:
   1. La app local debe estar corriendo (./run.sh) en http://127.0.0.1:8000
   2. La variable ADMIN_SECRET debe estar seteada IGUAL en ambos lados
-     (local y Railway). Pide el valor a Claude si no lo tienes a mano.
-  3. En la web de Railway ya debiste haber iniciado sesión al menos una vez
-     y darle "Actualizar con SII", para que las facturas (recibidas/emitidas)
-     ya existan ahí — si no, los pagos que apuntan a una factura que aún no
-     existe en Railway se reportan al final como "sin factura" y no se
-     pierden: puedes volver a correr este script después de sincronizar.
+     (local y Railway).
+  3. En la web de Railway ya debiste haber iniciado sesión y dado
+     "Actualizar con SII", para que las facturas (recibidas/emitidas) que
+     tienen pagos/cobros asociados ya existan ahí.
 
 Uso:
     ADMIN_SECRET="el-secreto" python3 migrar_a_railway.py
-
-Es seguro correrlo más de una vez para los pagos de facturas y fechas tope
-(se vuelven a insertar como pagos nuevos, así que si ya migraste algo NO lo
-vuelvas a correr sin avisar — duplicaría esos pagos). Las rendiciones SIEMPRE
-se crean nuevas cada vez que corres el script, así que solo debe ejecutarse
-UNA vez por rendición.
 """
 import os
 import sys
@@ -55,30 +58,58 @@ def main() -> int:
         print("No hay nada que migrar. Fin.")
         return 0
 
-    print(f"2) Subiendo datos a {RAILWAY_URL} ...")
-    r2 = requests.post(f"{RAILWAY_URL}/admin/import", params={"secret": SECRET}, json=data, timeout=60)
-    if r2.status_code == 404:
-        print("ERROR: Railway respondió 404. ¿Ya hiciste git push y terminó el redeploy con el")
+    # --- Evita duplicar rendiciones ya migradas: mira qué existe hoy en Railway ---
+    print(f"2) Revisando qué ya existe en {RAILWAY_URL} ...")
+    r0 = requests.get(f"{RAILWAY_URL}/admin/export", params={"secret": SECRET}, timeout=30)
+    if r0.status_code == 404:
+        print("ERROR: Railway respondió 404 en /admin/export. ¿Ya terminó el redeploy con el")
         print("       código nuevo? ¿ADMIN_SECRET está seteada en Railway con el mismo valor?")
         return 1
+    r0.raise_for_status()
+    existentes = {(rr["nombre"], rr["fecha"]): rr["local_id"] for rr in r0.json().get("rendiciones", [])}
+
+    a_crear = []
+    id_map_previo = {}
+    ya_migradas = 0
+    for rend in data.get("rendiciones", []):
+        clave = (rend["nombre"], rend["fecha"])
+        if clave in existentes:
+            id_map_previo[str(rend["local_id"])] = existentes[clave]
+            ya_migradas += 1
+        else:
+            a_crear.append(rend)
+    if ya_migradas:
+        print(f"   {ya_migradas} rendición(es) ya estaban migradas (por nombre+fecha) — no se duplican.")
+    print(f"   {len(a_crear)} rendición(es) nueva(s) por crear.")
+
+    payload = {
+        "rendiciones": a_crear,
+        "pagos_facturas": data.get("pagos_facturas", []),
+        "fecha_pago_tope": data.get("fecha_pago_tope", []),
+        "rendicion_id_map": id_map_previo,
+    }
+
+    print(f"3) Subiendo a {RAILWAY_URL} ...")
+    r2 = requests.post(f"{RAILWAY_URL}/admin/import", params={"secret": SECRET}, json=payload, timeout=60)
     r2.raise_for_status()
     resumen = r2.json()
     print(f"   Rendiciones creadas en Railway: {resumen['rendiciones_creadas']}")
     print(f"   Pagos/cobros de factura migrados: {resumen['pagos_facturas_ok']}")
     if resumen["pagos_facturas_sin_factura"]:
-        print(f"   AVISO: {len(resumen['pagos_facturas_sin_factura'])} pago(s) no se migraron porque")
-        print("          la factura aún no existe en Railway (falta sincronizar con el SII):")
-        for cod in resumen["pagos_facturas_sin_factura"]:
+        pendientes = resumen["pagos_facturas_sin_factura"]
+        print(f"   AVISO: {len(pendientes)} pago(s) no se migraron porque la factura aún no existe")
+        print("          en Railway (falta sincronizar con el SII):")
+        for cod in sorted(set(pendientes)):
             print(f"            - {cod}")
         print("          Sincroniza en la web y vuelve a correr este script para esos casos.")
 
-    # --- Adjuntos: uno por uno, usando el mapeo de ids que devolvió /admin/import ---
-    id_map = resumen["id_map"]  # {"local_id_str": nuevo_id_en_railway}
-    total_adj = sum(len(r["adjuntos"]) for r in data.get("rendiciones", []))
+    # --- Adjuntos: solo de las rendiciones NUEVAS (las ya existentes no se tocan) ---
+    id_map = resumen["id_map"]  # incluye las nuevas + las pasadas en rendicion_id_map
+    total_adj = sum(len(r["adjuntos"]) for r in a_crear)
     if total_adj:
-        print(f"3) Subiendo {total_adj} adjunto(s) ...")
+        print(f"4) Subiendo {total_adj} adjunto(s) de las rendiciones nuevas ...")
         subidos = 0
-        for rend in data.get("rendiciones", []):
+        for rend in a_crear:
             nuevo_rid = id_map.get(str(rend["local_id"]))
             if nuevo_rid is None:
                 continue

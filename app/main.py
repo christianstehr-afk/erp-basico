@@ -980,6 +980,11 @@ async def admin_import(request: Request, secret: str = ""):
     }
     conn = db.get_conn()
     try:
+        # Mapeo de ids ya conocido de antemano (rendiciones migradas en una corrida
+        # anterior): local_id -> id ya existente en esta BD. Se aplica ANTES de crear
+        # las nuevas para que los pagos de factura "vía rendición" resuelvan bien.
+        resumen["id_map"].update(payload.get("rendicion_id_map", {}) or {})
+
         for r in payload.get("rendiciones", []):
             rid = db.crear_rendicion(conn, r["nombre"], r["fecha"], r.get("items", []))
             resumen["id_map"][str(r["local_id"])] = rid
