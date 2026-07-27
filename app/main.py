@@ -876,6 +876,159 @@ def export_rendiciones(request: Request, desde: str = "", hasta: str = ""):
     return Response(content=data, media_type="application/zip", headers=headers)
 
 
+# ---------------------------------------------------------------------------
+# Migración única: local (Mac de Christian) -> Railway (producción)
+#
+# Herramienta TEMPORAL para pasar rendiciones/pagos/cobros ingresados a mano en
+# la app local a la base de datos de Railway (son bases independientes desde
+# el deploy). Solo funciona si ADMIN_SECRET está seteada como variable de
+# entorno; si no, los 4 endpoints devuelven 404 (o sea: quitar la variable en
+# Railway = apagar la herramienta). Ver migrar_a_railway.py.
+# ---------------------------------------------------------------------------
+
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
+
+
+def _admin_guard(secret: str) -> bool:
+    return bool(ADMIN_SECRET) and secrets.compare_digest((secret or ""), ADMIN_SECRET)
+
+
+@app.get("/admin/export")
+def admin_export(secret: str = ""):
+    if not _admin_guard(secret):
+        return Response(status_code=404)
+    conn = db.get_conn()
+    try:
+        rendiciones = []
+        for r in conn.execute("SELECT id, nombre, fecha FROM rendiciones ORDER BY id").fetchall():
+            items = [
+                {"descripcion": i["descripcion"], "numero_doc": i["numero_doc"], "monto": i["monto"]}
+                for i in conn.execute(
+                    "SELECT descripcion, numero_doc, monto FROM rendicion_items "
+                    "WHERE rendicion_id=? ORDER BY id", (r["id"],)
+                ).fetchall()
+            ]
+            pagos_r = [
+                {"fecha": p["fecha"], "monto": p["monto"]}
+                for p in conn.execute(
+                    "SELECT fecha, monto FROM rendicion_pagos WHERE rendicion_id=? ORDER BY id",
+                    (r["id"],)
+                ).fetchall()
+            ]
+            adjuntos = [
+                {"local_id": a["id"], "nombre_archivo": a["nombre_archivo"]}
+                for a in conn.execute(
+                    "SELECT id, nombre_archivo FROM rendicion_adjuntos "
+                    "WHERE rendicion_id=? ORDER BY id", (r["id"],)
+                ).fetchall()
+            ]
+            rendiciones.append({
+                "local_id": r["id"], "nombre": r["nombre"], "fecha": r["fecha"],
+                "items": items, "pagos": pagos_r, "adjuntos": adjuntos,
+            })
+
+        pagos_facturas = [
+            {
+                "codigo_sii": p["codigo_sii"], "direccion": p["direccion"],
+                "fecha": p["fecha"], "monto": p["monto"],
+                "rendicion_local_id": p["rendicion_id"],
+            }
+            for p in conn.execute(
+                "SELECT p.direccion, p.fecha, p.monto, p.rendicion_id, f.codigo_sii "
+                "FROM pagos p JOIN facturas f ON f.id = p.factura_id "
+                "ORDER BY p.id"
+            ).fetchall()
+        ]
+
+        tope = [
+            {"codigo_sii": t["codigo_sii"], "fecha_pago_tope": t["fecha_pago_tope"]}
+            for t in conn.execute(
+                "SELECT codigo_sii, fecha_pago_tope FROM facturas "
+                "WHERE fecha_pago_tope IS NOT NULL AND fecha_pago_tope != '' "
+                "AND fecha_pago_tope != fecha_emision"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+    return JSONResponse({"rendiciones": rendiciones, "pagos_facturas": pagos_facturas, "fecha_pago_tope": tope})
+
+
+@app.get("/admin/export/adjunto/{local_id}")
+def admin_export_adjunto(local_id: int, secret: str = ""):
+    if not _admin_guard(secret):
+        return Response(status_code=404)
+    conn = db.get_conn()
+    try:
+        row = conn.execute(
+            "SELECT nombre_archivo, path FROM rendicion_adjuntos WHERE id=?", (local_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or not Path(row["path"]).exists():
+        return Response(status_code=404)
+    return FileResponse(row["path"], filename=row["nombre_archivo"])
+
+
+@app.post("/admin/import")
+async def admin_import(request: Request, secret: str = ""):
+    if not _admin_guard(secret):
+        return Response(status_code=404)
+    payload = await request.json()
+    resumen = {
+        "rendiciones_creadas": 0, "pagos_facturas_ok": 0,
+        "pagos_facturas_sin_factura": [], "id_map": {},
+    }
+    conn = db.get_conn()
+    try:
+        for r in payload.get("rendiciones", []):
+            rid = db.crear_rendicion(conn, r["nombre"], r["fecha"], r.get("items", []))
+            resumen["id_map"][str(r["local_id"])] = rid
+            resumen["rendiciones_creadas"] += 1
+            for p in r.get("pagos", []):
+                db.agregar_pago_rendicion(conn, rid, p["fecha"], p["monto"])
+
+        for p in payload.get("pagos_facturas", []):
+            codigo = p.get("codigo_sii")
+            if not codigo:
+                resumen["pagos_facturas_sin_factura"].append(codigo)
+                continue
+            row = conn.execute("SELECT id FROM facturas WHERE codigo_sii=?", (codigo,)).fetchone()
+            if not row:
+                resumen["pagos_facturas_sin_factura"].append(codigo)
+                continue
+            rid_new = None
+            if p.get("rendicion_local_id") is not None:
+                rid_new = resumen["id_map"].get(str(p["rendicion_local_id"]))
+            db.agregar_pago(conn, row["id"], p["fecha"], p["monto"],
+                            direccion=p["direccion"], rendicion_id=rid_new)
+            resumen["pagos_facturas_ok"] += 1
+
+        for t in payload.get("fecha_pago_tope", []):
+            if t.get("codigo_sii"):
+                db.set_fecha_tope(conn, t["codigo_sii"], t["fecha_pago_tope"])
+
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse(resumen)
+
+
+@app.post("/admin/import/adjunto")
+async def admin_import_adjunto(rendicion_id: int = Form(...), secret: str = Form(...),
+                               archivo: UploadFile = File(...)):
+    if not _admin_guard(secret):
+        return Response(status_code=404)
+    conn = db.get_conn()
+    try:
+        if not db.rendicion_por_id(conn, rendicion_id):
+            return JSONResponse({"ok": False, "error": "rendición no encontrada"}, status_code=404)
+        _guardar_adjuntos(conn, rendicion_id, [archivo])
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True})
+
+
 @app.post("/logout")
 def logout(request: Request):
     sid = request.session.get("sid")
