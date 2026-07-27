@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -30,7 +30,7 @@ EMPRESA_RUT = os.environ.get("EMPRESA_RUT", "77708215-9")
 ANIO = int(os.environ.get("ANIO", "2026"))
 # Inicio en producción del ERP: solo se sincronizan documentos desde esta
 # fecha (junio 2026) en adelante.
-DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-06-01")
+DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-05-01")
 
 # Carpeta donde se guardan los adjuntos de rendiciones (boletas/facturas).
 ADJUNTOS_DIR = Path(
@@ -111,15 +111,18 @@ def login(request: Request, rut: str = Form(...), clave: str = Form(...)):
 
 
 @app.post("/sync")
-def sincronizar_ahora(request: Request, volver: str = Form("/")):
+def sincronizar_ahora(request: Request):
     client = _current_client(request)
     if not client or not client.rut:
-        return RedirectResponse("/", status_code=303)
-    try:
-        sync.sincronizar(client, anio=ANIO, desde=DESDE_SYNC)
-    except Exception:
-        pass
-    return RedirectResponse(volver, status_code=303)
+        return JSONResponse({"ok": False, "error": "no-session"}, status_code=401)
+    sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/sync/estado")
+def sync_estado(request: Request):
+    """Estado actual de la sincronización, para la barra de progreso."""
+    return JSONResponse(sync.estado_sync)
 
 
 def _vista_documentos(request: Request, tipo: str, titulo: str, col_contraparte: str,

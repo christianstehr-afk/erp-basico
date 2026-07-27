@@ -107,7 +107,7 @@
             <td style="padding:9px 10px;font-family:var(--mono)">{{ p["fecha"] }}</td>
             <td style="padding:9px 10px;text-align:right;font-family:var(--mono)">${{ "{:,.0f}".format(p["monto"]).replace(",", ".") }}</td>
             <td style="padding:9px 10px">
-              {% if p["rendicion_id"] %}<span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:3px;font-weight:700;background:rgba(0,148,6,.15);color:var(--green)" title="{{ p['rendicion_nombre'] }} · no suma al export">R-{{ '%04d'|format(p['rendicion_id']) }}</span>{% else %}<span style="color:var(--slate)">—</span>{% endif %}
+              {% if p["rendicion_id"] %}<a href="/pagos/rendiciones/{{ p['rendicion_id'] }}/pdf" target="_blank" title="Ver PDF de {{ p['rendicion_nombre'] }} · no suma al export" style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:3px;font-weight:700;background:rgba(0,148,6,.15);color:var(--green);border-bottom:1px dotted var(--green)">R-{{ '%04d'|format(p['rendicion_id']) }}</a>{% else %}<span style="color:var(--slate)">—</span>{% endif %}
             </td>
             <td style="padding:9px 10px;text-align:right">
               <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/pago/{{ p['id'] }}/eliminar" style="display:inline">
@@ -134,8 +134,8 @@
                  style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)">
         </div>
         <div>
-          <label style="display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px">Monto · máx ${{ "{:,.0f}".format(saldo).replace(",", ".") }}</label>
-          <input type="number" name="monto" min="1" max="{{ saldo }}" step="1" placeholder="0" required
+          <label style="display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px">Monto · <span onclick="document.getElementById('monto-input').value={{ saldo }}" title="Usar el monto máximo" style="cursor:pointer;color:var(--green);border-bottom:1px dotted var(--green)">máx ${{ "{:,.0f}".format(saldo).replace(",", ".") }}</span></label>
+          <input type="number" name="monto" id="monto-input" min="1" max="{{ saldo }}" step="1" placeholder="0" required
                  style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono);width:160px">
         </div>
         {% if seccion == "proveedores" and rendiciones %}

@@ -7,14 +7,58 @@ módulos siguientes: facturas (RCV) y pagos de E-Auto.
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
-# Ruta de la base de datos. Configurable con la variable de entorno DB_PATH;
-# por defecto se guarda en data/erp.db dentro del proyecto.
-DB_PATH = Path(
-    os.environ.get("DB_PATH", Path(__file__).resolve().parent.parent / "data" / "erp.db")
-)
+# --- Ubicación de la base de datos --------------------------------------
+# IMPORTANTE: la BD VIVA no debe vivir en una carpeta sincronizada por Dropbox.
+# SQLite y Dropbox no se llevan: Dropbox bloquea/revierte el archivo mientras
+# sincroniza y se pierden las escrituras más recientes (por eso desaparecían los
+# adjuntos). Por defecto la BD viva se guarda en una carpeta LOCAL del Mac,
+# fuera de Dropbox. Se puede sobreescribir con la variable de entorno DB_PATH
+# (p. ej. en Railway: /data/erp.db).
+_DEFAULT_DB = Path.home() / "Library" / "Application Support" / "ERPBasico" / "erp.db"
+DB_PATH = Path(os.environ.get("DB_PATH", _DEFAULT_DB))
+
+# BD antigua dentro del proyecto (carpeta Dropbox). Se usa una sola vez para
+# migrar los datos existentes a la nueva ubicación local.
+_LEGACY_DB = Path(__file__).resolve().parent.parent / "data" / "erp.db"
+
+# Carpeta de respaldos DENTRO del proyecto (Dropbox). Guardar aquí es seguro
+# porque son COPIAS estáticas del archivo (no la BD viva): Dropbox las sincroniza
+# sin riesgo. Configurable con DB_BACKUP_DIR.
+BACKUP_DIR = Path(os.environ.get(
+    "DB_BACKUP_DIR", Path(__file__).resolve().parent.parent / "data" / "backups"))
+MAX_BACKUPS = 15  # cuántas copias conservar
+
+
+def _migrar_desde_dropbox() -> None:
+    """Si la BD local aún no existe pero sí la antigua en Dropbox, la copia una
+    sola vez para no perder los datos ya cargados."""
+    if DB_PATH.exists() or DB_PATH == _LEGACY_DB:
+        return
+    if _LEGACY_DB.exists():
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_LEGACY_DB, DB_PATH)
+
+
+def respaldar_db() -> Path | None:
+    """Copia la BD viva a la carpeta de respaldos (Dropbox) con marca de tiempo
+    y conserva solo las últimas MAX_BACKUPS. Devuelve la ruta del respaldo."""
+    if DB_PATH == _LEGACY_DB or not DB_PATH.exists():
+        return None
+    try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        destino = BACKUP_DIR / f"erp_{datetime.now():%Y%m%d_%H%M%S}.db"
+        shutil.copy2(DB_PATH, destino)
+        copias = sorted(BACKUP_DIR.glob("erp_*.db"))
+        for viejo in copias[:-MAX_BACKUPS]:
+            viejo.unlink(missing_ok=True)
+        return destino
+    except Exception:
+        return None  # un respaldo fallido nunca debe tumbar el arranque
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS facturas (
@@ -128,9 +172,11 @@ def _migrar(conn: sqlite3.Connection) -> None:
 
 
 def init_db() -> None:
+    _migrar_desde_dropbox()
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrar(conn)
+    respaldar_db()
 
 
 def upsert_documento(conn: sqlite3.Connection, doc: dict, tipo: str) -> None:

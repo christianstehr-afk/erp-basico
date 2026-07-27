@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/static/styles.css">
   <style>
     .cockpit-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    @media (max-width:860px){.cockpit-grid{grid-template-columns:1fr}}
+    /* Breakpoints de tablet/móvil viven en styles.css (720px y 721-900px) para no duplicar reglas */
     .cockpit-panel{border:1px solid #1c1c1c;border-radius:var(--radius);background:#0f0f0f;padding:16px;display:flex;flex-direction:column;min-height:250px}
     .cockpit-phead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
     .cockpit-table{width:100%;border-collapse:collapse;font-size:12.5px}
@@ -29,6 +29,14 @@
     .cockpit-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
     .sii-btn{background:var(--green);color:#fff;border:none;padding:12px 18px;border-radius:var(--radius);font-weight:700;font-size:13px;letter-spacing:.02em;cursor:pointer;white-space:nowrap}
     .sii-btn:hover{background:var(--green-deep)}
+    .sii-btn:disabled{opacity:.6;cursor:default}
+    .sync-prog{margin-top:10px;width:220px;margin-left:auto;display:none}
+    .sync-prog.on{display:block}
+    .sync-bar-track{height:6px;background:#161616;border-radius:99px;overflow:hidden}
+    .sync-bar-fill{height:100%;width:0%;background:var(--green);border-radius:99px;transition:width .3s ease}
+    .sync-bar-fill.indet{width:35%;animation:syncSlide 1.1s ease-in-out infinite}
+    @keyframes syncSlide{0%{margin-left:-35%}100%{margin-left:100%}}
+    .sync-msg{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--slate);margin-top:6px;text-align:right}
   </style>
 </head>
 <body>
@@ -54,13 +62,62 @@
         <p>Lo urgente de un vistazo: rechazos, pagos y cobros vencidos, y rendiciones por pagar.</p>
       </div>
       <div style="text-align:right">
-        <form method="post" action="/sync">
-          <input type="hidden" name="volver" value="/">
-          <button type="submit" class="sii-btn">↻ Actualizar con SII</button>
-        </form>
-        {% if sync and sync.corriendo %}
-        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--slate);margin-top:8px">Descargando PDFs…</div>
-        {% endif %}
+        <button type="button" id="sync-btn" class="sii-btn">↻ Actualizar con SII</button>
+        <div id="sync-prog" class="sync-prog{% if sync and sync.corriendo %} on{% endif %}">
+          <div class="sync-bar-track"><div id="sync-fill" class="sync-bar-fill indet"></div></div>
+          <div id="sync-msg" class="sync-msg">{{ 'Sincronizando…' if sync and sync.corriendo else '' }}</div>
+        </div>
+        <script>
+        (function(){
+          var btn=document.getElementById('sync-btn'),
+              wrap=document.getElementById('sync-prog'),
+              fill=document.getElementById('sync-fill'),
+              msg=document.getElementById('sync-msg'),
+              timer=null;
+          function pintar(st){
+            wrap.classList.add('on');
+            btn.disabled=true;
+            var total=st.pdf_total||0, hechos=st.pdf_hechos||0;
+            if(total>0){
+              fill.classList.remove('indet');
+              var pct=Math.round(hechos/total*100);
+              fill.style.width=pct+'%';
+              msg.textContent=(st.fase||'Descargando PDFs…')+' '+hechos+'/'+total;
+            }else{
+              fill.classList.add('indet');
+              fill.style.width='';
+              msg.textContent=st.fase||'Sincronizando…';
+            }
+          }
+          function fin(err){
+            clearInterval(timer);timer=null;
+            fill.classList.remove('indet');fill.style.width='100%';
+            msg.textContent=err?('Error: '+err):'Listo · actualizando…';
+            btn.disabled=false;
+            if(!err) setTimeout(function(){location.reload();},800);
+          }
+          function poll(){
+            fetch('/sync/estado').then(function(r){return r.json();}).then(function(st){
+              if(st.error){fin(st.error);return;}
+              if(st.corriendo){pintar(st);}else{fin(null);}
+            }).catch(function(){/* reintenta en el próximo tick */});
+          }
+          function arrancar(){
+            if(timer) return;
+            wrap.classList.add('on');btn.disabled=true;
+            fill.classList.add('indet');msg.textContent='Iniciando…';
+            timer=setInterval(poll,1000);
+          }
+          btn.addEventListener('click',function(){
+            arrancar();
+            fetch('/sync',{method:'POST'}).then(function(r){
+              if(r.status===401){fin('sesión expirada');}
+            }).catch(function(){/* el poll seguirá intentando */});
+          });
+          // Si al cargar ya hay una sincronización en curso (p.ej. tras el login), seguirla.
+          {% if sync and sync.corriendo %}arrancar();{% endif %}
+        })();
+        </script>
       </div>
     </div>
 

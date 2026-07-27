@@ -50,11 +50,12 @@
       <table id="tabla-rend" style="width:100%;border-collapse:collapse;font-size:13px">
         <thead>
           <tr style="text-align:left;color:var(--slate);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em">
-            <th class="sortable" data-col="0" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Nombre <span class="arrow"></span></th>
-            <th class="sortable" data-col="1" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha <span class="arrow"></span></th>
-            <th class="sortable" data-col="2" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Total <span class="arrow"></span></th>
-            <th class="sortable" data-col="3" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Pagado <span class="arrow"></span></th>
-            <th class="sortable" data-col="4" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
+            <th class="sortable" data-col="0" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Folio <span class="arrow"></span></th>
+            <th class="sortable" data-col="1" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Nombre <span class="arrow"></span></th>
+            <th class="sortable" data-col="2" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha <span class="arrow"></span></th>
+            <th class="sortable" data-col="3" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Total <span class="arrow"></span></th>
+            <th class="sortable" data-col="4" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Pagado <span class="arrow"></span></th>
+            <th class="sortable" data-col="5" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
             <th style="padding:12px 14px">Adjuntos</th>
             <th style="padding:12px 14px"></th>
           </tr>
@@ -64,7 +65,8 @@
           {% set pagada = f["pagado"] >= f["total"] and f["total"] > 0 %}
           {% set color = 'var(--green)' if pagada else '#3b82f6' %}
           <tr style="border-top:1px solid #161616">
-            <td style="padding:11px 14px"><span style="font-family:var(--mono);font-size:11px;color:var(--slate);margin-right:8px">R-{{ '%04d'|format(f['id']) }}</span>{{ f["nombre"] }}</td>
+            <td data-value="{{ f['id'] }}" style="padding:11px 14px"><a href="/pagos/rendiciones/{{ f['id'] }}/pdf" target="_blank" title="Ver PDF de la rendición" style="font-family:var(--mono);font-size:11px;color:var(--green);border-bottom:1px dotted var(--green)">R-{{ '%04d'|format(f['id']) }}</a></td>
+            <td style="padding:11px 14px">{{ f["nombre"] }}</td>
             <td data-value="{{ f['fecha'] or '' }}" style="padding:11px 14px;font-family:var(--mono)">{{ f["fecha"] }}</td>
             <td data-value="{{ f['total'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono)">${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}</td>
             <td data-value="{{ f['pagado'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">${{ "{:,.0f}".format(f["pagado"]).replace(",", ".") }}</td>

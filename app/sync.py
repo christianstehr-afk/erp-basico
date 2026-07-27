@@ -25,9 +25,12 @@ PDF_DIR = Path(
 # Estado simple de sincronización (para mostrar en el panel)
 estado_sync: dict = {
     "corriendo": False,
+    "fase": "",           # texto de la etapa actual (para la barra de progreso)
     "recibidas": 0,
     "emitidas": 0,
     "pdf_pendientes": 0,
+    "pdf_total": 0,        # PDFs a descargar en esta corrida
+    "pdf_hechos": 0,       # PDFs ya descargados en esta corrida
     "error": None,
 }
 
@@ -41,7 +44,11 @@ def _descargar_pdfs_en_background(client: SIIClient, anio: int) -> None:
         def total_pendientes() -> int:
             return sum(len(db.pendientes_de_pdf(conn, tipo=t)) for t in _TIPOS)
 
-        estado_sync["pdf_pendientes"] = total_pendientes()
+        total = total_pendientes()
+        estado_sync["pdf_pendientes"] = total
+        estado_sync["pdf_total"] = total
+        estado_sync["pdf_hechos"] = 0
+        estado_sync["fase"] = ("Descargando PDFs…" if total else "Listo")
         for tipo, (fuente, subcarpeta) in _TIPOS.items():
             destino = PDF_DIR / subcarpeta / str(anio)
             for codigo in db.pendientes_de_pdf(conn, tipo=tipo):
@@ -52,9 +59,12 @@ def _descargar_pdfs_en_background(client: SIIClient, anio: int) -> None:
                         conn.commit()
                 except Exception:  # una descarga fallida no debe cortar el resto
                     continue
-                estado_sync["pdf_pendientes"] = total_pendientes()
+                pend = total_pendientes()
+                estado_sync["pdf_pendientes"] = pend
+                estado_sync["pdf_hechos"] = max(0, estado_sync["pdf_total"] - pend)
     finally:
         conn.close()
+        estado_sync["fase"] = "Listo"
         estado_sync["corriendo"] = False
 
 
@@ -64,12 +74,12 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
 
     Devuelve un resumen con cuántos documentos se trajeron de cada tipo.
     """
-    estado_sync.update(corriendo=True, error=None)
+    estado_sync.update(corriendo=True, error=None, fase="Consultando SII…")
     try:
         recibidos = sii_docs.obtener_documentos(client.session, "recibidos", anio=anio)
         emitidos = sii_docs.obtener_documentos(client.session, "emitidos", anio=anio)
     except Exception as exc:
-        estado_sync.update(corriendo=False, error=str(exc))
+        estado_sync.update(corriendo=False, error=str(exc), fase="Error")
         raise
 
     # Solo documentos desde `desde` (YYYY-MM-DD) en adelante: inicio en
@@ -78,6 +88,7 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         recibidos = [d for d in recibidos if (d.get("fecha") or "") >= desde]
         emitidos = [d for d in emitidos if (d.get("fecha") or "") >= desde]
 
+    estado_sync["fase"] = "Guardando documentos…"
     conn = db.get_conn()
     try:
         for d in recibidos:
@@ -118,6 +129,7 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         )
         hilo.start()
     else:
+        estado_sync["fase"] = "Listo"
         estado_sync["corriendo"] = False
 
     return {
@@ -126,3 +138,25 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         "total_recibidas": estado_sync["recibidas"],
         "total_emitidas": estado_sync["emitidas"],
     }
+
+
+def sincronizar_async(client: SIIClient, anio: int = 2026,
+                      desde: str | None = None) -> None:
+    """Dispara la sincronización completa en segundo plano.
+
+    Marca corriendo=True de inmediato (antes de devolver) para que el panel
+    muestre la barra de progreso apenas se pulsa el botón; el trabajo pesado
+    (consulta al SII, guardado y descarga de PDFs) corre en un hilo aparte.
+    """
+    if estado_sync.get("corriendo"):
+        return  # ya hay una sincronización en curso
+    estado_sync.update(corriendo=True, error=None, fase="Iniciando…",
+                       pdf_total=0, pdf_hechos=0)
+
+    def _worker() -> None:
+        try:
+            sincronizar(client, anio=anio, desde=desde)
+        except Exception as exc:
+            estado_sync.update(corriendo=False, error=str(exc), fase="Error")
+
+    threading.Thread(target=_worker, daemon=True).start()

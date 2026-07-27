@@ -23,7 +23,7 @@
       <span class="tag">ERP Básico</span>
     </div>
     <div class="userchip">
-      <button type="button" onclick="window.close()">Cerrar</button>
+      <button type="button" id="btn-cerrar">Cerrar</button>
     </div>
   </header>
 
@@ -38,5 +38,19 @@
 
     <iframe class="pdf-frame" src="/pdf/{{ codigo }}/ver" title="PDF"></iframe>
   </main>
+  <script>
+    // window.close() solo funciona si la pestaña la abrió un script; si no
+    // (p.ej. target=_blank en móvil), no pasa nada visible, así que hacemos
+    // fallback a "volver atrás" para que el botón siempre haga algo útil.
+    document.getElementById('btn-cerrar').addEventListener('click', function () {
+      window.close();
+      setTimeout(function () {
+        if (!window.closed) {
+          if (window.history.length > 1) window.history.back();
+          else window.location.href = '/';
+        }
+      }, 250);
+    });
+  </script>
 </body>
 </html>

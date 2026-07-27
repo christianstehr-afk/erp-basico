@@ -156,8 +156,8 @@
                  style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)">
         </div>
         <div>
-          <label style="display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px">Monto · máx ${{ "{:,.0f}".format(saldo).replace(",", ".") }}</label>
-          <input type="number" name="monto" min="1" max="{{ saldo }}" step="1" placeholder="0" required
+          <label style="display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px">Monto · <span onclick="document.getElementById('monto-input').value={{ saldo }}" title="Usar el monto máximo" style="cursor:pointer;color:var(--green);border-bottom:1px dotted var(--green)">máx ${{ "{:,.0f}".format(saldo).replace(",", ".") }}</span></label>
+          <input type="number" name="monto" id="monto-input" min="1" max="{{ saldo }}" step="1" placeholder="0" required
                  style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono);width:160px">
         </div>
         <button type="submit"
