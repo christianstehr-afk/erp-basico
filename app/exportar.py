@@ -149,17 +149,19 @@ def _pagina_info(c, r, items, pagos) -> None:
 
     W, H = A4
     mx = 20 * mm
-    y = H - 18 * mm
+    y = H - 22 * mm
 
+    # Logo: justificado a la derecha, a la misma altura del título (nombre),
+    # sin ocupar espacio en el flujo vertical del texto de la izquierda.
     logo = _logo_reader()
     if logo is not None:
         try:
             iw, ih = logo.getSize()
-            logo_w = 30 * mm
-            logo_h = logo_w * ih / iw
-            c.drawImage(logo, mx, y - logo_h, logo_w, logo_h,
+            logo_h = 14 * mm
+            logo_w = logo_h * iw / ih
+            titulo_y = y - 9 * mm  # misma y donde se dibuja el título más abajo
+            c.drawImage(logo, W - mx - logo_w, titulo_y - 3 * mm, logo_w, logo_h,
                         preserveAspectRatio=True, mask="auto")
-            y -= logo_h + 6 * mm
         except Exception:
             pass  # un logo que no se pudo dibujar no debe tumbar el PDF
 
