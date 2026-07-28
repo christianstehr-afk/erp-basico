@@ -361,7 +361,7 @@ def _guardar_fecha_tope(request: Request, seccion: str, codigo: str, fecha_tope:
 
 
 def _agregar_movimiento(request: Request, seccion: str, codigo: str,
-                        fecha: str, monto: str, rendicion_id: str = ""):
+                        fecha: str, monto: str, rendicion_id: str = "", externo: str = ""):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
@@ -398,10 +398,17 @@ def _agregar_movimiento(request: Request, seccion: str, codigo: str,
             return _render_detalle(request, client, seccion, codigo,
                                    error=f"El monto supera el saldo pendiente (${saldo_fmt}).",
                                    status_code=400)
-        # Pago vía rendición (solo pago a proveedores): valida la rendición y la
-        # regla "una factura -> una sola rendición".
+        # Pago vía rendición o pago externo (solo pago a proveedores): mutuamente
+        # excluyentes entre sí. Vía rendición valida la rendición y la regla
+        # "una factura -> una sola rendición". Externo no lleva más validación:
+        # significa que no se pagó desde la CC empresa ni vía una rendición.
         rid = None
         rid_str = (rendicion_id or "").strip()
+        es_externo = bool((externo or "").strip())
+        if rid_str and es_externo:
+            return _render_detalle(request, client, seccion, codigo,
+                                   error="Un pago no puede ser vía rendición y externo a la vez.",
+                                   status_code=400)
         if rid_str:
             try:
                 rid = int(rid_str)
@@ -419,7 +426,7 @@ def _agregar_movimiento(request: Request, seccion: str, codigo: str,
                           "no puede asociarse a otra.",
                     status_code=400)
         db.agregar_pago(conn, f["id"], fecha, monto_int,
-                        direccion=cfg["direccion"], rendicion_id=rid)
+                        direccion=cfg["direccion"], rendicion_id=rid, externo=es_externo)
         conn.commit()
     finally:
         conn.close()
@@ -463,8 +470,8 @@ def proveedores_fecha_tope(request: Request, codigo: str, fecha_tope: str = Form
 @app.post("/pagos/proveedores/{codigo}/pago")
 def proveedores_agregar(request: Request, codigo: str,
                         fecha: str = Form(...), monto: str = Form(...),
-                        rendicion_id: str = Form("")):
-    return _agregar_movimiento(request, "proveedores", codigo, fecha, monto, rendicion_id)
+                        rendicion_id: str = Form(""), externo: str = Form("")):
+    return _agregar_movimiento(request, "proveedores", codigo, fecha, monto, rendicion_id, externo)
 
 
 @app.post("/pagos/proveedores/{codigo}/pago/{pago_id}/eliminar")

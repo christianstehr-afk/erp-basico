@@ -107,7 +107,7 @@
             <td style="padding:9px 10px;font-family:var(--mono)">{{ p["fecha"] }}</td>
             <td style="padding:9px 10px;text-align:right;font-family:var(--mono)">${{ "{:,.0f}".format(p["monto"]).replace(",", ".") }}</td>
             <td style="padding:9px 10px">
-              {% if p["rendicion_id"] %}<a href="/pagos/rendiciones/{{ p['rendicion_id'] }}/pdf" target="_blank" title="Ver PDF de {{ p['rendicion_nombre'] }} · no suma al export" style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:3px;font-weight:700;background:rgba(0,148,6,.15);color:var(--green);border-bottom:1px dotted var(--green)">R-{{ '%04d'|format(p['rendicion_id']) }}</a>{% else %}<span style="color:var(--slate)">—</span>{% endif %}
+              {% if p["rendicion_id"] %}<a href="/pagos/rendiciones/{{ p['rendicion_id'] }}/pdf" target="_blank" title="Ver PDF de {{ p['rendicion_nombre'] }} · no suma al export" style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:3px;font-weight:700;background:rgba(0,148,6,.15);color:var(--green);border-bottom:1px dotted var(--green)">R-{{ '%04d'|format(p['rendicion_id']) }}</a>{% elif p["externo"] %}<span title="No se pagó desde la CC empresa ni vía rendición · no suma al export" style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:3px;font-weight:700;background:rgba(148,148,148,.15);color:var(--slate)">Externo</span>{% else %}<span style="color:var(--slate)">—</span>{% endif %}
             </td>
             <td style="padding:9px 10px;text-align:right">
               <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/pago/{{ p['id'] }}/eliminar" style="display:inline">
@@ -138,8 +138,9 @@
           <input type="number" name="monto" id="monto-input" min="1" max="{{ saldo }}" step="1" placeholder="0" required
                  style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono);width:160px">
         </div>
-        {% if seccion == "proveedores" and rendiciones %}
+        {% if seccion == "proveedores" %}
         <div style="display:flex;flex-direction:column;gap:6px">
+          {% if rendiciones %}
           <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mist);cursor:pointer">
             <input type="checkbox" id="chk-rend" onchange="toggleRend()"> Pagado vía rendición
           </label>
@@ -151,6 +152,10 @@
             {% endfor %}
           </select>
           {% if rend_asociada %}<span style="font-size:11px;color:var(--slate)">Ya asociada a {{ rend_asociada.codigo }}</span>{% endif %}
+          {% endif %}
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mist);cursor:pointer" title="No se pagó desde la CC empresa ni está asociado a una rendición">
+            <input type="checkbox" name="externo" id="chk-externo" onchange="toggleExterno()"> Pago externo
+          </label>
         </div>
         {% endif %}
         <button type="submit"
@@ -162,13 +167,27 @@
     </div>
   </main>
   <script>
+    // "Pagado vía rendición" y "Pago externo" son mutuamente excluyentes:
+    // marcar uno desmarca (y deshabilita) el otro.
     function toggleRend(){
       var chk=document.getElementById('chk-rend');
       var sel=document.getElementById('sel-rend');
+      var chkExt=document.getElementById('chk-externo');
       if(!chk||!sel) return;
       var on=chk.checked;
       sel.style.display = on ? '' : 'none';
       sel.disabled = !on;
+      if(on && chkExt){ chkExt.checked=false; }
+    }
+    function toggleExterno(){
+      var chkExt=document.getElementById('chk-externo');
+      var chkRend=document.getElementById('chk-rend');
+      var sel=document.getElementById('sel-rend');
+      if(!chkExt) return;
+      if(chkExt.checked && chkRend){
+        chkRend.checked=false;
+        if(sel){ sel.style.display='none'; sel.disabled=true; }
+      }
     }
   </script>
 </body>

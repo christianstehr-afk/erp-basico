@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS pagos (
     direccion     TEXT NOT NULL,              -- 'emitido' (E-Auto paga) | 'recibido' (E-Auto cobra)
     factura_id    INTEGER,                     -- FK opcional a facturas.id
     rendicion_id  INTEGER,                     -- si el pago se hizo vía una rendición (no suma al export)
+    externo       INTEGER DEFAULT 0,           -- 1 = pago externo: no fue desde la CC empresa ni vía
+                                                -- rendición (no suma al export, sin rendición asociada)
     fecha         TEXT,                        -- YYYY-MM-DD
     monto         INTEGER NOT NULL,
     medio         TEXT,                        -- transferencia, cheque, efectivo, ...
@@ -163,6 +165,8 @@ def _migrar(conn: sqlite3.Connection) -> None:
     cols_pagos = {r[1] for r in conn.execute("PRAGMA table_info(pagos)")}
     if "rendicion_id" not in cols_pagos:
         conn.execute("ALTER TABLE pagos ADD COLUMN rendicion_id INTEGER")
+    if "externo" not in cols_pagos:
+        conn.execute("ALTER TABLE pagos ADD COLUMN externo INTEGER DEFAULT 0")
     # Rellena la fecha tope (de pago/cobro) que aún no exista con su fecha de emisión.
     # Aplica a recibidas (pago a proveedores) y emitidas (ingresos).
     conn.execute(
@@ -289,7 +293,7 @@ def set_fecha_tope(conn: sqlite3.Connection, codigo: str, fecha: str) -> None:
 
 def pagos_de_factura(conn: sqlite3.Connection, factura_id: int) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT p.id, p.fecha, p.monto, p.rendicion_id, r.nombre AS rendicion_nombre "
+        "SELECT p.id, p.fecha, p.monto, p.rendicion_id, p.externo, r.nombre AS rendicion_nombre "
         "FROM pagos p LEFT JOIN rendiciones r ON r.id = p.rendicion_id "
         "WHERE p.factura_id = ? ORDER BY p.fecha ASC, p.id ASC",
         (factura_id,),
@@ -312,17 +316,21 @@ def rendicion_asociada_a_factura(conn: sqlite3.Connection, factura_id: int) -> i
 
 
 def agregar_pago(conn: sqlite3.Connection, factura_id: int, fecha: str, monto: int,
-                 direccion: str = "emitido", rendicion_id: int | None = None) -> None:
+                 direccion: str = "emitido", rendicion_id: int | None = None,
+                 externo: bool = False) -> None:
     """Registra un pago parcial de una factura.
 
     `direccion='emitido'` = pago que E-Auto realiza (pago a proveedores).
     `rendicion_id` no-null = el pago se hizo vía esa rendición; ese monto NO se
     suma al listado de export (la rendición ya aporta el movimiento de caja).
+    `externo=True` = el pago NO se hizo desde la CC empresa y tampoco está
+    asociado a una rendición; tampoco suma al listado de export. Es
+    mutuamente excluyente con `rendicion_id` (se valida en main.py).
     """
     conn.execute(
-        "INSERT INTO pagos (direccion, factura_id, fecha, monto, rendicion_id) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (direccion, factura_id, fecha, monto, rendicion_id),
+        "INSERT INTO pagos (direccion, factura_id, fecha, monto, rendicion_id, externo) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (direccion, factura_id, fecha, monto, rendicion_id, 1 if externo else 0),
     )
 
 
@@ -482,6 +490,7 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
         JOIN facturas f ON f.id = p.factura_id
         WHERE p.fecha >= ? AND p.fecha <= ?
           AND p.rendicion_id IS NULL
+          AND (p.externo IS NULL OR p.externo = 0)
         """,
         (desde, hasta),
     ).fetchall():
