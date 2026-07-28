@@ -296,11 +296,13 @@ def _vista_lista(request: Request, seccion: str):
     conn = db.get_conn()
     try:
         filas = db.facturas_con_pago(conn, tipo=cfg["tipo"])
-        # Los totales y el conteo del encabezado ignoran las rechazadas (no se cobrarán).
-        vigentes = [f for f in filas if not f["fecha_reclamo"]]
+        # Los totales y el conteo del encabezado ignoran rechazadas y anuladas
+        # (no se cobrarán/pagarán).
+        vigentes = [f for f in filas if not f["fecha_reclamo"] and not f["anulada_por"]]
         total_monto = sum(f["total"] for f in vigentes)
         total_pendiente = sum(max(f["total"] - f["pagado"], 0) for f in vigentes)
-        n_rechazadas = len(filas) - len(vigentes)
+        n_rechazadas = len([f for f in filas if f["fecha_reclamo"]])
+        n_anuladas = len([f for f in filas if f["anulada_por"] and not f["fecha_reclamo"]])
     finally:
         conn.close()
     return templates.TemplateResponse(
@@ -309,6 +311,7 @@ def _vista_lista(request: Request, seccion: str):
             "request": request, "rut": client.rut, "anio": ANIO,
             "seccion": seccion, "cfg": cfg, "filas": filas,
             "n_vigentes": len(vigentes), "n_rechazadas": n_rechazadas,
+            "n_anuladas": n_anuladas,
             "total_monto": total_monto, "total_pendiente": total_pendiente,
         },
     )
@@ -322,6 +325,9 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
         f = db.factura_pago_por_codigo(conn, codigo)
         if not f:
             return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
+        if f["anulada_por"]:
+            # Anulada por una NC: no hay nada que gestionar aquí.
+            return RedirectResponse(f"/pagos/{seccion}", status_code=303)
         pagos = db.pagos_de_factura(conn, f["id"])
         rendiciones = []
         rend_asociada = None
@@ -400,6 +406,8 @@ def _agregar_movimiento(request: Request, seccion: str, codigo: str,
         f = db.factura_pago_por_codigo(conn, codigo)
         if not f:
             return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
+        if f["anulada_por"]:
+            return RedirectResponse(f"/pagos/{seccion}", status_code=303)
         if f["fecha_reclamo"]:
             return _render_detalle(request, client, seccion, codigo,
                                    error="La factura está rechazada; no admite movimientos.",

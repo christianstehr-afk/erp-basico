@@ -18,12 +18,14 @@ La página del SII viene en codificación ISO-8859-1 (latin-1).
 """
 from __future__ import annotations
 
+import io
 import re
 import unicodedata
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
 
 BASE = "https://www1.sii.cl/cgi-bin/Portal001/"
 DETALLE_RE = re.compile(r"mipeGesDoc")
@@ -171,6 +173,32 @@ def obtener_pdf_bytes(session: requests.Session, fuente: str, codigo: str) -> by
     if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
         return resp.content
     return None
+
+
+# Notas de Crédito Electrónicas que dejan sin efecto una factura completa
+# incluyen en su PDF una línea de referencia como:
+#   "ANULA DOCUMENTO DE LA REFERENCIA- Fact.Electronica N° 124 del 2026-07-27"
+# El texto exacto del tipo de documento varía; lo único estable es la frase
+# "ANULA DOCUMENTO DE LA REFERENCIA" seguida, en algún punto cercano, del
+# folio tras "N°"/"Nº".
+ANULA_REF_RE = re.compile(
+    r"ANULA\s+DOCUMENTO\s+DE\s+LA\s+REFERENCIA[\s\S]{0,80}?N[°ºo]\s*(\d+)",
+    re.IGNORECASE,
+)
+
+
+def folio_anulado_en_nc(pdf_bytes: bytes) -> int | None:
+    """Si el PDF de una Nota de Crédito trae la frase de anulación, devuelve el
+    folio del documento que anula. Devuelve None si no aplica (p. ej. una NC
+    normal de descuento) o si el PDF no se pudo leer."""
+    try:
+        texto = "\n".join(
+            (pagina.extract_text() or "") for pagina in PdfReader(io.BytesIO(pdf_bytes)).pages
+        )
+    except Exception:
+        return None
+    m = ANULA_REF_RE.search(texto)
+    return int(m.group(1)) if m else None
 
 
 def descargar_pdf(

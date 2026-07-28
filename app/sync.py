@@ -68,6 +68,27 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None) -
             except Exception:
                 pass  # si el RCV no responde, seguimos sin marcar rechazos
 
+        # Notas de crédito de anulación: revisa el PDF de cada NC emitida aún no
+        # procesada en busca de "ANULA DOCUMENTO DE LA REFERENCIA..." y, si la
+        # encuentra, marca como ANULADA la factura que referencia (folio +
+        # contraparte). Solo se descarga el PDF una vez por NC (ver
+        # ref_procesada); si la descarga falla se reintenta en el próximo sync.
+        pendientes_nc = db.notas_credito_sin_procesar(conn)
+        if pendientes_nc:
+            estado_sync["fase"] = "Revisando notas de crédito…"
+            for nc in pendientes_nc:
+                try:
+                    pdf_bytes = sii_docs.obtener_pdf_bytes(client.session, "emitidos", nc["codigo_sii"])
+                except Exception:
+                    pdf_bytes = None
+                if not pdf_bytes:
+                    continue
+                folio_ref = sii_docs.folio_anulado_en_nc(pdf_bytes)
+                if folio_ref:
+                    db.marcar_anulada(conn, folio_ref, nc["rut_contraparte"], nc["codigo_sii"])
+                db.marcar_referencia_procesada(conn, nc["codigo_sii"])
+            conn.commit()
+
         estado_sync["recibidas"] = conn.execute(
             "SELECT COUNT(*) FROM facturas WHERE tipo='compra'"
         ).fetchone()[0]

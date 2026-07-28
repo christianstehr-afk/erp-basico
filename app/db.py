@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS facturas (
     fecha_acuse   TEXT,                        -- fecha/hora de acuse de recibo (RCV)
     fecha_pago_tope TEXT,                      -- fecha tope de pago (default = fecha_emision); editable
     descripcion   TEXT,                        -- nota libre de la gestión del pago/cobro (una por factura)
+    anulada_por   TEXT,                        -- codigo_sii de la Nota de Crédito que anuló esta factura (solo ventas)
+    ref_procesada INTEGER DEFAULT 0,           -- 1 = ya se revisó el PDF de esta NC buscando "ANULA DOCUMENTO..."
     creado_en     TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(tipo, tipo_dte, folio, rut_contraparte)
 );
@@ -157,7 +159,7 @@ def _migrar(conn: sqlite3.Connection) -> None:
     nuevas = {
         "codigo_sii": "TEXT", "documento": "TEXT", "pdf_path": "TEXT",
         "fecha_reclamo": "TEXT", "fecha_acuse": "TEXT", "fecha_pago_tope": "TEXT",
-        "descripcion": "TEXT",
+        "descripcion": "TEXT", "anulada_por": "TEXT", "ref_procesada": "INTEGER DEFAULT 0",
     }
     for col, ddl in nuevas.items():
         if col not in existentes:
@@ -262,7 +264,7 @@ def facturas_con_pago(conn: sqlite3.Connection, tipo: str = "compra") -> list[sq
         f"""
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo,
-               f.pdf_path, f.descripcion,
+               f.pdf_path, f.descripcion, f.anulada_por,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.tipo = ?
@@ -279,7 +281,7 @@ def factura_pago_por_codigo(conn: sqlite3.Connection, codigo: str) -> sqlite3.Ro
         """
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo, f.pdf_path,
-               f.descripcion,
+               f.descripcion, f.anulada_por,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.codigo_sii = ?
@@ -299,6 +301,47 @@ def set_descripcion(conn: sqlite3.Connection, codigo: str, descripcion: str) -> 
     conn.execute(
         "UPDATE facturas SET descripcion = ? WHERE codigo_sii = ?", (descripcion, codigo)
     )
+
+
+# ---------------------------------------------------------------------------
+# Notas de crédito de anulación (facturas emitidas)
+#
+# Algunas Notas de Crédito Electrónicas (tipo_dte=61) dejan sin efecto una
+# factura emitida completa ("ANULA DOCUMENTO DE LA REFERENCIA..." en el PDF).
+# Esa factura pasa a estado ANULADA: no se cobra, no se gestiona y no entra al
+# export de movimientos.
+# ---------------------------------------------------------------------------
+
+def notas_credito_sin_procesar(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Notas de crédito emitidas cuyo PDF aún no se revisó buscando la
+    referencia de anulación."""
+    return conn.execute(
+        "SELECT codigo_sii, folio, rut_contraparte FROM facturas "
+        "WHERE tipo = 'venta' AND tipo_dte = 61 AND codigo_sii IS NOT NULL "
+        "AND (ref_procesada IS NULL OR ref_procesada = 0)"
+    ).fetchall()
+
+
+def marcar_referencia_procesada(conn: sqlite3.Connection, codigo_sii: str) -> None:
+    """Marca que ya se intentó leer el PDF de esta NC (se logró o no encontrar
+    la referencia de anulación); evita volver a descargarlo en cada sync."""
+    conn.execute("UPDATE facturas SET ref_procesada = 1 WHERE codigo_sii = ?", (codigo_sii,))
+
+
+def marcar_anulada(conn: sqlite3.Connection, folio: int, rut_contraparte: str, nc_codigo: str) -> bool:
+    """Marca como ANULADA la factura de venta (folio + contraparte) referenciada
+    por una Nota de Crédito de anulación. Solo actúa si hay una única
+    coincidencia (si no encuentra ninguna o hay ambigüedad, no hace nada).
+    Devuelve True si se marcó."""
+    filas = conn.execute(
+        "SELECT id FROM facturas WHERE tipo = 'venta' AND folio = ? AND rut_contraparte = ? "
+        "AND tipo_dte != 61",
+        (folio, rut_contraparte),
+    ).fetchall()
+    if len(filas) != 1:
+        return False
+    conn.execute("UPDATE facturas SET anulada_por = ? WHERE id = ?", (nc_codigo, filas[0]["id"]))
+    return True
 
 
 def pagos_de_factura(conn: sqlite3.Connection, factura_id: int) -> list[sqlite3.Row]:
@@ -603,6 +646,8 @@ def documentos_vencidos(conn: sqlite3.Connection, tipo: str, hoy: str) -> list[d
     for f in facturas_con_pago(conn, tipo=tipo):
         if f["fecha_reclamo"]:
             continue  # una rechazada no se paga ni se cobra
+        if f["anulada_por"]:
+            continue  # una anulada (NC de anulación) tampoco se cobra
         pendiente = (f["total"] or 0) - (f["pagado"] or 0)
         if pendiente <= 0:
             continue  # ya pagada/cobrada al 100%

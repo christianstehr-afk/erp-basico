@@ -38,11 +38,12 @@
         ${{ "{:,.0f}".format(total_pendiente).replace(",", ".") }} de
         ${{ "{:,.0f}".format(total_monto).replace(",", ".") }}
         {% if n_rechazadas %}<span style="color:var(--red)"> · {{ n_rechazadas }} rechazada{{ 's' if n_rechazadas != 1 else '' }} (no incluida{{ 's' if n_rechazadas != 1 else '' }})</span>{% endif %}
+        {% if n_anuladas %}<span style="color:var(--green)"> · {{ n_anuladas }} anulada{{ 's' if n_anuladas != 1 else '' }} (no incluida{{ 's' if n_anuladas != 1 else '' }})</span>{% endif %}
       </p>
       <p style="margin-top:10px;font-family:var(--mono);font-size:11px;letter-spacing:.04em">
         <span style="color:var(--green)">● {{ cfg.estado_ok }}</span>&nbsp;&nbsp;
         <span style="color:#3b82f6">● Pendiente</span>
-        {% if seccion == 'ingresos' %}&nbsp;&nbsp;<span style="color:var(--red)">● Rechazada</span>{% endif %}
+        {% if seccion == 'ingresos' %}&nbsp;&nbsp;<span style="color:var(--red)">● Rechazada</span>&nbsp;&nbsp;<span style="color:var(--green)">● Anulada</span>{% endif %}
       </p>
     </div>
 
@@ -64,9 +65,10 @@
         <tbody>
           {% for f in filas %}
           {% set rechazada = f["fecha_reclamo"] %}
+          {% set anulada = f["anulada_por"] %}
           {% set pagada = f["pagado"] >= f["total"] and f["total"] > 0 %}
-          {% set color = 'var(--red)' if rechazada else ('var(--green)' if pagada else '#3b82f6') %}
-          {% set orden_estado = -1 if rechazada else (2 if pagada else 1) %}
+          {% set color = 'var(--red)' if rechazada else ('var(--green)' if (pagada or anulada) else '#3b82f6') %}
+          {% set orden_estado = -1 if rechazada else (3 if anulada else (2 if pagada else 1)) %}
           <tr style="border-top:1px solid #161616{% if rechazada %};color:var(--red){% endif %}">
             <td style="padding:11px 14px">{{ f["documento"] }}</td>
             <td data-value="{{ f['folio'] or 0 }}" style="padding:11px 14px;font-family:var(--mono)">
@@ -85,11 +87,14 @@
               {% else %}<span style="color:var(--slate)">—</span>{% endif %}
             </td>
             <td data-value="{{ f['fecha_pago_tope'] or '9999-99-99' }}" style="padding:11px 14px;font-family:var(--mono)">{{ f["fecha_pago_tope"] or "—" }}</td>
-            <td data-value="{{ f['total'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono)">${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}</td>
-            <td data-value="{{ f['pagado'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">${{ "{:,.0f}".format(f["pagado"]).replace(",", ".") }}</td>
+            <td data-value="{{ 0 if anulada else f['total'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono)">{% if anulada %}---{% else %}${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}{% endif %}</td>
+            <td data-value="{{ 0 if anulada else f['pagado'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">{% if anulada %}---{% else %}${{ "{:,.0f}".format(f["pagado"]).replace(",", ".") }}{% endif %}</td>
             <td data-value="{{ orden_estado }}" style="padding:11px 14px">
               {% if rechazada %}
                 <span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;background:rgba(255,73,73,.15);color:var(--red)">Rechazada</span>
+              {% elif anulada %}
+                <a href="/pdf/{{ anulada }}" target="_blank" title="Ver PDF de la Nota de Crédito que anuló esta factura"
+                   style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;background:rgba(0,148,6,.15);color:var(--green);border-bottom:1px dotted var(--green)">Anulada</a>
               {% else %}
                 <span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;
                   background:{{ 'rgba(0,148,6,.15)' if pagada else 'rgba(59,130,246,.15)' }};color:{{ color }}">
@@ -98,7 +103,7 @@
               {% endif %}
             </td>
             <td style="padding:11px 14px">
-              {% if not rechazada %}
+              {% if not rechazada and not anulada %}
               <a href="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}"
                  style="display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:6px 12px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">Gestionar</a>
               {% else %}<span style="color:var(--slate)">—</span>{% endif %}
