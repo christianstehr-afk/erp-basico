@@ -53,10 +53,11 @@
             <th class="sortable" data-col="0" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Documento <span class="arrow"></span></th>
             <th class="sortable" data-col="1" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Folio <span class="arrow"></span></th>
             <th class="sortable" data-col="2" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">{{ cfg.col_contraparte }} <span class="arrow"></span></th>
-            <th class="sortable" data-col="3" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha tope <span class="arrow"></span></th>
-            <th class="sortable" data-col="4" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Monto <span class="arrow"></span></th>
-            <th class="sortable" data-col="5" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">{{ cfg.label_pagado }} <span class="arrow"></span></th>
-            <th class="sortable" data-col="6" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
+            <th class="sortable" data-col="3" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Descripción <span class="arrow"></span></th>
+            <th class="sortable" data-col="4" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha tope <span class="arrow"></span></th>
+            <th class="sortable" data-col="5" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Monto <span class="arrow"></span></th>
+            <th class="sortable" data-col="6" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">{{ cfg.label_pagado }} <span class="arrow"></span></th>
+            <th class="sortable" data-col="7" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
             <th style="padding:12px 14px"></th>
           </tr>
         </thead>
@@ -77,6 +78,11 @@
             <td data-value="{{ (f['razon_social'] or '')|lower }}" style="padding:11px 14px">
               <div>{{ f["razon_social"] }}</div>
               <div style="font-family:var(--mono);font-size:11px;color:{{ 'var(--red)' if rechazada else 'var(--slate)' }}">{{ f["rut_contraparte"] }}</div>
+            </td>
+            <td data-value="{{ (f['descripcion'] or '')|lower }}" style="padding:11px 14px;max-width:220px">
+              {% if f["descripcion"] %}
+                <span title="{{ f['descripcion'] }}" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f["descripcion"] }}</span>
+              {% else %}<span style="color:var(--slate)">—</span>{% endif %}
             </td>
             <td data-value="{{ f['fecha_pago_tope'] or '9999-99-99' }}" style="padding:11px 14px;font-family:var(--mono)">{{ f["fecha_pago_tope"] or "—" }}</td>
             <td data-value="{{ f['total'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono)">${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}</td>

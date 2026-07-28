@@ -91,6 +91,18 @@
       </form>
     </div>
 
+    <!-- Descripción de la gestión (una nota por factura, no por movimiento parcial) -->
+    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:20px;background:#0f0f0f">
+      <div class="eyebrow" style="margin-bottom:12px">Descripción</div>
+      <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/descripcion"
+            style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+        <textarea name="descripcion" rows="2" placeholder="Notas sobre esta gestión…"
+                  style="flex:1;min-width:240px;background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:13px;font-family:var(--font);resize:vertical">{{ f["descripcion"] or "" }}</textarea>
+        <button type="submit"
+          style="background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:var(--radius);font-weight:700;font-size:13px">Guardar</button>
+      </form>
+    </div>
+
     <!-- Movimientos parciales -->
     <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;background:#0f0f0f">
       <div class="eyebrow" style="margin-bottom:14px">{{ cfg.accion|capitalize }}s parciales</div>

@@ -101,11 +101,10 @@ def login(request: Request, rut: str = Form(...), clave: str = Form(...)):
     SII_SESSIONS[sid] = client
     request.session["sid"] = sid
 
-    # Actualiza la BD con las facturas recibidas nuevas (PDFs en segundo plano)
-    try:
-        sync.sincronizar(client, anio=ANIO, desde=DESDE_SYNC)
-    except Exception:
-        pass  # si el SII falla, igual dejamos entrar al panel
+    # Dispara la sincronización en segundo plano (no bloquea el login): el
+    # cockpit, al cargar, ve `sync.corriendo=True` y muestra su barra de
+    # progreso automáticamente mientras la sincronización avanza.
+    sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC)
 
     return RedirectResponse("/", status_code=303)
 
@@ -360,6 +359,19 @@ def _guardar_fecha_tope(request: Request, seccion: str, codigo: str, fecha_tope:
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
+def _guardar_descripcion(request: Request, seccion: str, codigo: str, descripcion: str):
+    """Guarda la nota de la gestión: un solo campo por factura, no por pago parcial."""
+    if not _guard(request):
+        return RedirectResponse("/", status_code=303)
+    conn = db.get_conn()
+    try:
+        db.set_descripcion(conn, codigo, descripcion.strip())
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
+
+
 def _agregar_movimiento(request: Request, seccion: str, codigo: str,
                         fecha: str, monto: str, rendicion_id: str = "", externo: str = ""):
     client = _guard(request)
@@ -467,6 +479,11 @@ def proveedores_fecha_tope(request: Request, codigo: str, fecha_tope: str = Form
     return _guardar_fecha_tope(request, "proveedores", codigo, fecha_tope)
 
 
+@app.post("/pagos/proveedores/{codigo}/descripcion")
+def proveedores_descripcion(request: Request, codigo: str, descripcion: str = Form("")):
+    return _guardar_descripcion(request, "proveedores", codigo, descripcion)
+
+
 @app.post("/pagos/proveedores/{codigo}/pago")
 def proveedores_agregar(request: Request, codigo: str,
                         fecha: str = Form(...), monto: str = Form(...),
@@ -497,6 +514,11 @@ def ingresos_detalle(request: Request, codigo: str):
 @app.post("/pagos/ingresos/{codigo}/fecha-tope")
 def ingresos_fecha_tope(request: Request, codigo: str, fecha_tope: str = Form(...)):
     return _guardar_fecha_tope(request, "ingresos", codigo, fecha_tope)
+
+
+@app.post("/pagos/ingresos/{codigo}/descripcion")
+def ingresos_descripcion(request: Request, codigo: str, descripcion: str = Form("")):
+    return _guardar_descripcion(request, "ingresos", codigo, descripcion)
 
 
 @app.post("/pagos/ingresos/{codigo}/pago")

@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS facturas (
     fecha_reclamo TEXT,                        -- fecha/hora de rechazo (RCV); no-null = rechazada
     fecha_acuse   TEXT,                        -- fecha/hora de acuse de recibo (RCV)
     fecha_pago_tope TEXT,                      -- fecha tope de pago (default = fecha_emision); editable
+    descripcion   TEXT,                        -- nota libre de la gestión del pago/cobro (una por factura)
     creado_en     TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(tipo, tipo_dte, folio, rut_contraparte)
 );
@@ -156,6 +157,7 @@ def _migrar(conn: sqlite3.Connection) -> None:
     nuevas = {
         "codigo_sii": "TEXT", "documento": "TEXT", "pdf_path": "TEXT",
         "fecha_reclamo": "TEXT", "fecha_acuse": "TEXT", "fecha_pago_tope": "TEXT",
+        "descripcion": "TEXT",
     }
     for col, ddl in nuevas.items():
         if col not in existentes:
@@ -260,7 +262,7 @@ def facturas_con_pago(conn: sqlite3.Connection, tipo: str = "compra") -> list[sq
         f"""
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo,
-               f.pdf_path,
+               f.pdf_path, f.descripcion,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.tipo = ?
@@ -277,6 +279,7 @@ def factura_pago_por_codigo(conn: sqlite3.Connection, codigo: str) -> sqlite3.Ro
         """
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo, f.pdf_path,
+               f.descripcion,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.codigo_sii = ?
@@ -288,6 +291,13 @@ def factura_pago_por_codigo(conn: sqlite3.Connection, codigo: str) -> sqlite3.Ro
 def set_fecha_tope(conn: sqlite3.Connection, codigo: str, fecha: str) -> None:
     conn.execute(
         "UPDATE facturas SET fecha_pago_tope = ? WHERE codigo_sii = ?", (fecha, codigo)
+    )
+
+
+def set_descripcion(conn: sqlite3.Connection, codigo: str, descripcion: str) -> None:
+    """Guarda la nota de la gestión (una por factura, no por pago parcial)."""
+    conn.execute(
+        "UPDATE facturas SET descripcion = ? WHERE codigo_sii = ?", (descripcion, codigo)
     )
 
 
