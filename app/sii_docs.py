@@ -27,6 +27,8 @@ import requests
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
+from .sii_client import SIISessionExpirada
+
 BASE = "https://www1.sii.cl/cgi-bin/Portal001/"
 DETALLE_RE = re.compile(r"mipeGesDoc")
 CODIGO_RE = re.compile(r"CODIGO=(\d+)")
@@ -67,6 +69,31 @@ def _norm(texto: str) -> str:
 def _solo_digitos(texto: str) -> int:
     n = re.sub(r"[^0-9]", "", texto or "")
     return int(n) if n else 0
+
+
+# Frases que solo aparecen en la pantalla de acceso del SII (login), nunca en
+# las páginas ya autenticadas del sistema de facturación. Si el SII cierra la
+# sesión por inactividad, cualquier .cgi que debería devolver la lista de
+# documentos o un PDF devuelve esta pantalla en su lugar.
+#
+# Nota: esto es best-effort. No tenemos forma de probarlo contra una sesión
+# real vencida sin credenciales de producción, así que si el SII cambia esa
+# pantalla puede que haya que ajustar los marcadores.
+_MARCADORES_LOGIN = (
+    "clave tributaria",
+    "ingrese su rut y clave",
+    "sesion ha expirado",
+    "sesion no valida",
+    "sesion invalida",
+    "debe iniciar sesion",
+)
+
+
+def _es_pagina_de_login(html: str) -> bool:
+    """True si `html` es la pantalla de acceso del SII (sesión vencida)
+    en vez del contenido esperado (lista de documentos o PDF)."""
+    texto = _norm(html)
+    return any(m in texto for m in _MARCADORES_LOGIN)
 
 
 def _texto_propio(celda) -> str:
@@ -152,6 +179,10 @@ def obtener_documentos(
         params["NUM_PAG"] = pagina
         resp = session.get(cfg["url"], params=params, timeout=60)
         html = resp.content.decode("iso-8859-1", "replace")
+        if pagina == 1 and _es_pagina_de_login(html):
+            raise SIISessionExpirada(
+                "La sesión con el SII se perdió (probablemente por inactividad)."
+            )
         filas = parse_lista(html)
         if not filas:
             break
@@ -172,6 +203,10 @@ def obtener_pdf_bytes(session: requests.Session, fuente: str, codigo: str) -> by
     resp = session.get(cfg["pdf_url"], params={cfg["pdf_param"]: codigo}, timeout=60)
     if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
         return resp.content
+    if _es_pagina_de_login(resp.content.decode("iso-8859-1", "replace")):
+        raise SIISessionExpirada(
+            "La sesión con el SII se perdió (probablemente por inactividad)."
+        )
     return None
 
 

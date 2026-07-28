@@ -32,6 +32,17 @@ class SIIAuthError(Exception):
     """Error de autenticación o de comunicación con el SII."""
 
 
+class SIISessionExpirada(Exception):
+    """La sesión ya autenticada con el SII se perdió a mitad de uso (p. ej.
+    por inactividad prolongada).
+
+    Se distingue de SIIAuthError porque no es un problema de credenciales: el
+    login original fue correcto, pero el SII cerró la sesión de su lado. No
+    se reintenta sola ni se guarda la clave para reloguear en silencio; quien
+    la capture debe invalidar la sesión guardada y pedirle al usuario que
+    vuelva a ingresar su Clave Tributaria."""
+
+
 def normalizar_rut(rut_raw: str) -> tuple[str, str]:
     """Devuelve (numero_sin_dv, dv) a partir de cualquier formato de RUT.
 

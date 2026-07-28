@@ -100,8 +100,15 @@
             btn.disabled=false;
             if(!err) setTimeout(function(){location.reload();},800);
           }
+          function sesionPerdida(){
+            clearInterval(timer);timer=null;
+            fill.classList.remove('indet');fill.style.width='100%';
+            msg.textContent='Sesión con el SII perdida · reingresando…';
+            setTimeout(function(){location.href='/?relogin=1';},1200);
+          }
           function poll(){
             fetch('/sync/estado').then(function(r){return r.json();}).then(function(st){
+              if(st.sesion_perdida){sesionPerdida();return;}
               if(st.error){fin(st.error);return;}
               if(st.corriendo){pintar(st);}else{fin(null);}
             }).catch(function(){/* reintenta en el próximo tick */});

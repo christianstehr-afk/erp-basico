@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import db, exportar, sii_docs, sync
-from .sii_client import SIIAuthError, SIIClient
+from .sii_client import SIIAuthError, SIIClient, SIISessionExpirada
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -60,8 +60,40 @@ def _current_client(request: Request) -> SIIClient | None:
     return SII_SESSIONS.get(sid) if sid else None
 
 
+def _invalidar_sesion(request: Request) -> None:
+    """Descarta la sesión SII guardada (por sid) cuando se detecta que el SII
+    ya la cerró de su lado. No vuelve a loguear solo: la próxima carga de "/"
+    muestra el formulario de acceso de nuevo."""
+    sid = request.session.pop("sid", None)
+    if sid:
+        SII_SESSIONS.pop(sid, None)
+
+
+_MSG_SESION_PERDIDA = (
+    "Se perdió la sesión con el SII (probablemente por inactividad prolongada). "
+    "Volvé a ingresar tu Clave Tributaria para continuar."
+)
+
+
+def _html_sesion_perdida(rut: str | None) -> HTMLResponse:
+    """Respuesta para /pdf/{codigo}/ver y /descargar cuando se detecta sesión
+    SII vencida. target="_top" porque /ver se sirve embebido en un <iframe>
+    (ver pdf_viewer.html): el link necesita romper el iframe para llevar al
+    login real."""
+    html = (
+        "<div style=\"font-family:Arial,sans-serif;background:#0f0f0f;color:#eee;"
+        "height:100vh;display:flex;flex-direction:column;align-items:center;"
+        "justify-content:center;gap:16px;text-align:center;padding:24px\">"
+        f"<p style=\"max-width:420px\">{_MSG_SESION_PERDIDA}</p>"
+        f"<a href=\"/?relogin=1&rut={rut or ''}\" target=\"_top\" "
+        "style=\"color:#2ecc71;font-weight:700;text-decoration:none\">"
+        "Iniciar sesión de nuevo →</a></div>"
+    )
+    return HTMLResponse(html, status_code=401)
+
+
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request):
+def index(request: Request, relogin: int = 0, rut: str = ""):
     client = _current_client(request)
     if client and client.rut:
         conn = db.get_conn()
@@ -83,7 +115,14 @@ def index(request: Request):
                 "rendiciones_pend": rendiciones_pend,
             },
         )
-    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "error": _MSG_SESION_PERDIDA if relogin else None,
+            "rut_prefill": rut,
+        },
+    )
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -94,7 +133,9 @@ def login(request: Request, rut: str = Form(...), clave: str = Form(...)):
         client.seleccionar_empresa(EMPRESA_RUT)
     except SIIAuthError as exc:
         return templates.TemplateResponse(
-            "login.html", {"request": request, "error": str(exc)}, status_code=401
+            "login.html",
+            {"request": request, "error": str(exc), "rut_prefill": rut},
+            status_code=401,
         )
 
     sid = secrets.token_urlsafe(24)
@@ -120,7 +161,14 @@ def sincronizar_ahora(request: Request):
 
 @app.get("/sync/estado")
 def sync_estado(request: Request):
-    """Estado actual de la sincronización, para la barra de progreso."""
+    """Estado actual de la sincronización, para la barra de progreso.
+
+    Si el sync detectó que el SII cerró la sesión (sesion_perdida), se
+    invalida acá la sesión guardada: el próximo `/?relogin=1` al que el panel
+    redirige ya encuentra el formulario de login, no el cockpit viejo.
+    """
+    if sync.estado_sync.get("sesion_perdida"):
+        _invalidar_sesion(request)
     return JSONResponse(sync.estado_sync)
 
 
@@ -226,7 +274,12 @@ def pdf_ver(request: Request, codigo: str):
     fuente = _FUENTE_POR_TIPO.get(row["tipo"]) if row else None
     if not row or not fuente:
         return Response("PDF no disponible", status_code=404)
-    data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+    try:
+        data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+    except SIISessionExpirada:
+        rut = client.rut
+        _invalidar_sesion(request)
+        return _html_sesion_perdida(rut)
     if not data:
         return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
     # Sin filename => se muestra embebido (inline) en el visor
@@ -242,7 +295,12 @@ def pdf_descargar(request: Request, codigo: str):
     fuente = _FUENTE_POR_TIPO.get(row["tipo"]) if row else None
     if not row or not fuente:
         return Response("PDF no disponible", status_code=404)
-    data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+    try:
+        data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+    except SIISessionExpirada:
+        rut = client.rut
+        _invalidar_sesion(request)
+        return _html_sesion_perdida(rut)
     if not data:
         return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
     # Con filename => Content-Disposition attachment => fuerza la descarga

@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 
 from . import db, sii_docs, sii_rcv
-from .sii_client import SIIClient
+from .sii_client import SIIClient, SIISessionExpirada
 
 # Estado simple de sincronización (para mostrar en el panel)
 estado_sync: dict = {
@@ -23,6 +23,11 @@ estado_sync: dict = {
     "recibidas": 0,
     "emitidas": 0,
     "error": None,
+    # Distinto de un error cualquiera: la sesión con el SII se cerró de su
+    # lado (típicamente por inactividad) y hay que volver a iniciar sesión
+    # para seguir sincronizando. El panel usa esto para mandar al usuario a
+    # /?relogin=1 en vez de solo mostrar "Error: ...".
+    "sesion_perdida": False,
 }
 
 
@@ -31,10 +36,13 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None) -
 
     Devuelve un resumen con cuántos documentos se trajeron de cada tipo.
     """
-    estado_sync.update(corriendo=True, error=None, fase="Consultando SII…")
+    estado_sync.update(corriendo=True, error=None, fase="Consultando SII…", sesion_perdida=False)
     try:
         recibidos = sii_docs.obtener_documentos(client.session, "recibidos", anio=anio)
         emitidos = sii_docs.obtener_documentos(client.session, "emitidos", anio=anio)
+    except SIISessionExpirada as exc:
+        estado_sync.update(corriendo=False, error=str(exc), fase="Sesión perdida", sesion_perdida=True)
+        raise
     except Exception as exc:
         estado_sync.update(corriendo=False, error=str(exc), fase="Error")
         raise
@@ -119,11 +127,13 @@ def sincronizar_async(client: SIIClient, anio: int = 2026,
     """
     if estado_sync.get("corriendo"):
         return  # ya hay una sincronización en curso
-    estado_sync.update(corriendo=True, error=None, fase="Iniciando…")
+    estado_sync.update(corriendo=True, error=None, fase="Iniciando…", sesion_perdida=False)
 
     def _worker() -> None:
         try:
             sincronizar(client, anio=anio, desde=desde)
+        except SIISessionExpirada:
+            pass  # ya quedó reflejado en estado_sync (sesion_perdida=True)
         except Exception as exc:
             estado_sync.update(corriendo=False, error=str(exc), fase="Error")
 
