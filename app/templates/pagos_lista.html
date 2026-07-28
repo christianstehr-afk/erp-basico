@@ -65,7 +65,7 @@
           <tr style="border-top:1px solid #161616{% if rechazada %};color:var(--red){% endif %}">
             <td style="padding:11px 14px">{{ f["documento"] }}</td>
             <td data-value="{{ f['folio'] or 0 }}" style="padding:11px 14px;font-family:var(--mono)">
-              {% if f["pdf_path"] %}
+              {% if f["codigo_sii"] %}
                 <a href="/pdf/{{ f['codigo_sii'] }}" target="_blank" title="Ver PDF de la factura"
                    style="color:var(--green);border-bottom:1px dotted var(--green)">{{ f["folio"] }}</a>
               {% else %}{{ f["folio"] }}{% endif %}

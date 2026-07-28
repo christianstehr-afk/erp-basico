@@ -160,6 +160,19 @@ def obtener_documentos(
     return docs
 
 
+def obtener_pdf_bytes(session: requests.Session, fuente: str, codigo: str) -> bytes | None:
+    """Descarga el PDF del documento y lo devuelve en memoria (sin guardarlo en disco).
+
+    Se usa para servirlo al vuelo cuando el usuario lo pide (ver /pdf/{codigo}/ver
+    en main.py), en vez de guardar una copia local como hacía `descargar_pdf`.
+    """
+    cfg = FUENTES[fuente]
+    resp = session.get(cfg["pdf_url"], params={cfg["pdf_param"]: codigo}, timeout=60)
+    if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
+        return resp.content
+    return None
+
+
 def descargar_pdf(
     session: requests.Session, fuente: str, codigo: str, destino_dir: Path
 ) -> str | None:

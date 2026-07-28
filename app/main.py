@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import db, exportar, sync
+from . import db, exportar, sii_docs, sync
 from .sii_client import SIIAuthError, SIIClient
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -175,11 +175,16 @@ def facturas_alias():
     return RedirectResponse("/recibidas", status_code=303)
 
 
+# Los PDF de facturas ya NO se guardan en disco: se piden al SII al momento
+# de verlos, con la sesión activa del usuario. `tipo` en BD -> fuente sii_docs.
+_FUENTE_POR_TIPO = {"compra": "recibidos", "venta": "emitidos"}
+
+
 def _factura_por_codigo(codigo: str):
     conn = db.get_conn()
     try:
         return conn.execute(
-            "SELECT documento, folio, razon_social, rut_contraparte, pdf_path "
+            "SELECT documento, folio, razon_social, rut_contraparte, tipo "
             "FROM facturas WHERE codigo_sii = ?",
             (codigo,),
         ).fetchone()
@@ -198,7 +203,7 @@ def pdf_viewer(request: Request, codigo: str):
     if not client or not client.rut:
         return RedirectResponse("/", status_code=303)
     row = _factura_por_codigo(codigo)
-    if not row or not row["pdf_path"] or not Path(row["pdf_path"]).exists():
+    if not row:
         return HTMLResponse("<p>PDF no disponible.</p>", status_code=404)
     return templates.TemplateResponse(
         "pdf_viewer.html",
@@ -219,10 +224,14 @@ def pdf_ver(request: Request, codigo: str):
     if not client or not client.rut:
         return RedirectResponse("/", status_code=303)
     row = _factura_por_codigo(codigo)
-    if not row or not row["pdf_path"] or not Path(row["pdf_path"]).exists():
+    fuente = _FUENTE_POR_TIPO.get(row["tipo"]) if row else None
+    if not row or not fuente:
         return Response("PDF no disponible", status_code=404)
+    data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+    if not data:
+        return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
     # Sin filename => se muestra embebido (inline) en el visor
-    return FileResponse(row["pdf_path"], media_type="application/pdf")
+    return Response(content=data, media_type="application/pdf")
 
 
 @app.get("/pdf/{codigo}/descargar")
@@ -231,11 +240,16 @@ def pdf_descargar(request: Request, codigo: str):
     if not client or not client.rut:
         return RedirectResponse("/", status_code=303)
     row = _factura_por_codigo(codigo)
-    if not row or not row["pdf_path"] or not Path(row["pdf_path"]).exists():
+    fuente = _FUENTE_POR_TIPO.get(row["tipo"]) if row else None
+    if not row or not fuente:
         return Response("PDF no disponible", status_code=404)
+    data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+    if not data:
+        return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
     # Con filename => Content-Disposition attachment => fuerza la descarga
-    return FileResponse(
-        row["pdf_path"], media_type="application/pdf", filename=_nombre_pdf(row)
+    return Response(
+        content=data, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{_nombre_pdf(row)}"'},
     )
 
 
@@ -879,11 +893,11 @@ def export_rendiciones(request: Request, desde: str = "", hasta: str = ""):
 # ---------------------------------------------------------------------------
 # Migración única: local (Mac de Christian) -> Railway (producción)
 #
-# Herramienta TEMPORAL para pasar rendiciones/pagos/cobros ingresados a mano en
-# la app local a la base de datos de Railway (son bases independientes desde
-# el deploy). Solo funciona si ADMIN_SECRET está seteada como variable de
-# entorno; si no, los 4 endpoints devuelven 404 (o sea: quitar la variable en
-# Railway = apagar la herramienta). Ver migrar_a_railway.py.
+# Herramienta de administración: migración local -> Railway (rendiciones/pagos/
+# cobros) y respaldo/descarga de la BD completa. Solo funciona si ADMIN_SECRET
+# está seteada como variable de entorno; si no, los 5 endpoints devuelven 404
+# (o sea: quitar la variable en Railway = apagar la herramienta). Ver
+# migrar_a_railway.py.
 # ---------------------------------------------------------------------------
 
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
@@ -891,6 +905,38 @@ ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
 
 def _admin_guard(secret: str) -> bool:
     return bool(ADMIN_SECRET) and secrets.compare_digest((secret or ""), ADMIN_SECRET)
+
+
+@app.get("/admin/backup")
+def admin_backup(secret: str = ""):
+    """Descarga una copia consistente del archivo completo de la BD (.db).
+
+    Usa la API de backup de sqlite3 (no una copia de archivo cruda) para que
+    la copia sea válida aunque haya escrituras en curso.
+    """
+    if not _admin_guard(secret):
+        return Response(status_code=404)
+    import sqlite3
+    import tempfile
+    from datetime import datetime as _dt
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        origen = sqlite3.connect(db.DB_PATH)
+        destino = sqlite3.connect(tmp_path)
+        with destino:
+            origen.backup(destino)
+        origen.close()
+        destino.close()
+        data = Path(tmp_path).read_bytes()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    nombre = f"erp_backup_{_dt.now():%Y%m%d_%H%M%S}.db"
+    return Response(
+        content=data, media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
 
 
 @app.get("/admin/export")

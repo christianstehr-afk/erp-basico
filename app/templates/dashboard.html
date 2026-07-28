@@ -144,7 +144,7 @@
               {% for f in rechazadas %}
               <tr>
                 <td class="mono" data-value="{{ f['folio'] }}">
-                  {% if f['pdf_path'] %}<a class="folio-link" style="color:var(--red)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}<span style="color:var(--red)">{{ f['folio'] }}</span>{% endif %}
+                  {% if f['codigo_sii'] %}<a class="folio-link" style="color:var(--red)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}<span style="color:var(--red)">{{ f['folio'] }}</span>{% endif %}
                 </td>
                 <td>{{ f['razon_social'] }}</td>
                 <td class="mono" data-value="{{ f['fecha_emision'] or '' }}">{{ f['fecha_emision'] }}</td>
@@ -180,7 +180,7 @@
               {% for f in pagos_vencidos %}
               <tr>
                 <td class="mono" data-value="{{ f['folio'] }}">
-                  {% if f['pdf_path'] %}<a class="folio-link" style="color:var(--green)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}{{ f['folio'] }}{% endif %}
+                  {% if f['codigo_sii'] %}<a class="folio-link" style="color:var(--green)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}{{ f['folio'] }}{% endif %}
                 </td>
                 <td>{{ f['razon_social'] }}</td>
                 <td class="mono" data-value="{{ f['fecha_pago_tope'] or '' }}" style="color:var(--red)">{{ f['fecha_pago_tope'] }}</td>
@@ -216,7 +216,7 @@
               {% for f in cobranza_vencida %}
               <tr>
                 <td class="mono" data-value="{{ f['folio'] }}">
-                  {% if f['pdf_path'] %}<a class="folio-link" style="color:var(--green)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}{{ f['folio'] }}{% endif %}
+                  {% if f['codigo_sii'] %}<a class="folio-link" style="color:var(--green)" href="/pdf/{{ f['codigo_sii'] }}" target="_blank">{{ f['folio'] }}</a>{% else %}{{ f['folio'] }}{% endif %}
                 </td>
                 <td>{{ f['razon_social'] }}</td>
                 <td class="mono" data-value="{{ f['fecha_pago_tope'] or '' }}" style="color:var(--red)">{{ f['fecha_pago_tope'] }}</td>

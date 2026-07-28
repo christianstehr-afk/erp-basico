@@ -10,6 +10,7 @@ Estas funciones no tocan la base de datos; reciben los datos ya consultados.
 from __future__ import annotations
 
 import io
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -18,6 +19,33 @@ from .db import codigo_rendicion
 
 # Extensiones de imagen que se pintan "una por página" en el PDF.
 IMG_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp"}
+
+# Logo E-Auto para la portada del PDF de rendición. Se descarga UNA vez y se
+# cachea en disco (evita depender de internet en cada PDF); si la descarga
+# falla, la portada se dibuja igual pero sin logo (nunca debe tumbar el PDF).
+_LOGO_URL = "https://www.e-auto.global/assets/logos/eauto_logo_new.webp"
+_LOGO_CACHE = Path(os.environ.get(
+    "LOGO_CACHE_PATH", Path(__file__).resolve().parent.parent / "data" / "eauto_logo.png"
+))
+
+
+def _logo_reader():
+    """Devuelve un ImageReader del logo E-Auto (cacheado), o None si no se pudo obtener."""
+    from reportlab.lib.utils import ImageReader
+
+    try:
+        if not (_LOGO_CACHE.exists() and _LOGO_CACHE.stat().st_size > 0):
+            import requests
+            from PIL import Image
+
+            resp = requests.get(_LOGO_URL, timeout=10)
+            resp.raise_for_status()
+            img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+            _LOGO_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            img.save(_LOGO_CACHE, "PNG")
+        return ImageReader(str(_LOGO_CACHE))
+    except Exception:
+        return None
 
 
 def _miles(n: int) -> str:
@@ -121,7 +149,19 @@ def _pagina_info(c, r, items, pagos) -> None:
 
     W, H = A4
     mx = 20 * mm
-    y = H - 22 * mm
+    y = H - 18 * mm
+
+    logo = _logo_reader()
+    if logo is not None:
+        try:
+            iw, ih = logo.getSize()
+            logo_w = 30 * mm
+            logo_h = logo_w * ih / iw
+            c.drawImage(logo, mx, y - logo_h, logo_w, logo_h,
+                        preserveAspectRatio=True, mask="auto")
+            y -= logo_h + 6 * mm
+        except Exception:
+            pass  # un logo que no se pudo dibujar no debe tumbar el PDF
 
     c.setFillColorRGB(0, 0.58, 0.023)  # verde e-auto
     c.setFont("Helvetica-Bold", 9)
