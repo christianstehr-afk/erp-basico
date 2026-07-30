@@ -303,9 +303,13 @@ def _pdf_de_rendicion(r, items, adjuntos, pagos) -> bytes:
     return out.getvalue()
 
 
-def _pdf_de_gestion_pago(f, pagos, cfg) -> bytes:
+def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False) -> bytes:
     """Devuelve el PDF (bytes) del detalle de gestión de una factura (pago a
-    proveedores / cobro a clientes): resumen + movimientos parciales."""
+    proveedores / cobro a clientes): resumen + movimientos parciales.
+
+    Si `incluye_original` es True, deja una nota indicando que el documento
+    original de la factura viene a continuación (el llamador es quien anexa
+    esas páginas, con `anexar_pdf`, porque requiere una sesión SII activa)."""
     import textwrap
 
     from reportlab.lib.pagesizes import A4
@@ -434,9 +438,41 @@ def _pdf_de_gestion_pago(f, pagos, cfg) -> bytes:
         c.drawString(mx, y, f"Aún no hay {cfg['accion']}s registrados.")
         y -= 5.5 * mm
 
+    if incluye_original:
+        y -= 8 * mm
+        if y < 20 * mm:
+            c.showPage()
+            y = H - 22 * mm
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawString(mx, y, "— Documento original de la factura a continuación —")
+
     c.showPage()
     c.save()
     return buf.getvalue()
+
+
+def anexar_pdf(base: bytes, extra: bytes | None) -> bytes:
+    """Agrega las páginas de `extra` al final de `base`.
+
+    Si `extra` es None o no se puede leer como PDF, devuelve `base` sin
+    cambios (nunca debe tumbar la generación del PDF de gestión).
+    """
+    if not extra:
+        return base
+    from pypdf import PdfReader, PdfWriter
+
+    try:
+        writer = PdfWriter()
+        for page in PdfReader(io.BytesIO(base)).pages:
+            writer.add_page(page)
+        for page in PdfReader(io.BytesIO(extra)).pages:
+            writer.add_page(page)
+        out = io.BytesIO()
+        writer.write(out)
+        return out.getvalue()
+    except Exception:
+        return base
 
 
 def construir_zip_rendiciones(rendiciones: list[dict]) -> bytes:

@@ -413,7 +413,8 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
 
 def _pdf_gestion(request: Request, seccion: str, codigo: str):
     """Devuelve el PDF del detalle de gestión de una factura (inline, para
-    abrirlo en el navegador): resumen + movimientos parciales."""
+    abrirlo en el navegador): resumen + movimientos parciales + el PDF
+    original de la factura (obtenido en vivo desde el SII) anexado al final."""
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
@@ -426,7 +427,22 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
         pagos = db.pagos_de_factura(conn, f["id"])
     finally:
         conn.close()
-    data = exportar._pdf_de_gestion_pago(f, pagos, cfg)
+
+    # El documento original vive solo en el SII (no se guarda copia local);
+    # se obtiene con la sesión activa del usuario, igual que /pdf/{codigo}/ver.
+    # Si la sesión expiró o el SII no responde, igual se devuelve el PDF de
+    # gestión (sin el original) en vez de fallar.
+    factura_bytes = None
+    fuente = _FUENTE_POR_TIPO.get(cfg["tipo"])
+    if fuente:
+        try:
+            factura_bytes = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+        except SIISessionExpirada:
+            factura_bytes = None
+
+    data = exportar._pdf_de_gestion_pago(f, pagos, cfg, incluye_original=bool(factura_bytes))
+    if factura_bytes:
+        data = exportar.anexar_pdf(data, factura_bytes)
     return Response(content=data, media_type="application/pdf")
 
 
