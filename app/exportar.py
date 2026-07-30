@@ -303,6 +303,142 @@ def _pdf_de_rendicion(r, items, adjuntos, pagos) -> bytes:
     return out.getvalue()
 
 
+def _pdf_de_gestion_pago(f, pagos, cfg) -> bytes:
+    """Devuelve el PDF (bytes) del detalle de gestión de una factura (pago a
+    proveedores / cobro a clientes): resumen + movimientos parciales."""
+    import textwrap
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+
+    from .db import codigo_rendicion
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    W, H = A4
+    mx = 20 * mm
+    y = H - 22 * mm
+
+    logo = _logo_reader()
+    if logo is not None:
+        try:
+            iw, ih = logo.getSize()
+            logo_h = 14 * mm
+            logo_w = logo_h * iw / ih
+            titulo_y = y - 9 * mm
+            c.drawImage(logo, W - mx - logo_w, titulo_y - 3 * mm, logo_w, logo_h,
+                        preserveAspectRatio=True, mask="auto")
+        except Exception:
+            pass
+
+    rechazada = bool(f["fecha_reclamo"])
+    total = f["total"] or 0
+    pagado = f["pagado"] or 0
+    saldo = total - pagado
+    pagada = pagado >= total and total > 0
+    estado = "Rechazada" if rechazada else (cfg["estado_ok"] if pagada else "Pendiente")
+
+    c.setFillColorRGB(0, 0.58, 0.023)  # verde e-auto
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(mx, y, f"E-AUTO · {cfg['titulo'].upper()}")
+    y -= 9 * mm
+    c.setFillColorRGB(0.04, 0.04, 0.04)
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(mx, y, f"{f['documento']} · Folio {f['folio']}"[:80])
+    y -= 7 * mm
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.setFont("Helvetica", 10)
+    c.drawString(mx, y, f"{f['razon_social'] or ''} · {f['rut_contraparte'] or ''}"[:100])
+    y -= 6 * mm
+    c.drawString(mx, y, f"Fecha de emisión: {f['fecha_emision'] or '—'}")
+    y -= 12 * mm
+
+    c.setFillColorRGB(0.04, 0.04, 0.04)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(
+        mx, y,
+        f"Monto factura: ${_miles(total)}    {cfg['label_pagado']}: ${_miles(pagado)}    "
+        f"Saldo: ${_miles(saldo)}",
+    )
+    y -= 7 * mm
+    c.setFont("Helvetica-Bold", 10)
+    if rechazada:
+        c.setFillColorRGB(0.75, 0.15, 0.15)
+    elif pagada:
+        c.setFillColorRGB(0, 0.58, 0.023)
+    else:
+        c.setFillColorRGB(0.05, 0.4, 0.85)
+    c.drawString(mx, y, f"Estado: {estado}")
+    y -= 10 * mm
+
+    c.setFillColorRGB(0.04, 0.04, 0.04)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(mx, y, f"Fecha de {cfg['accion']} tope: {f['fecha_pago_tope'] or '—'}")
+    y -= 10 * mm
+
+    if f["descripcion"]:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(mx, y, "Descripción")
+        y -= 6 * mm
+        c.setFont("Helvetica", 9)
+        c.setFillColorRGB(0.15, 0.15, 0.15)
+        for linea in textwrap.wrap(f["descripcion"], 105) or [""]:
+            if y < 25 * mm:
+                c.showPage()
+                y = H - 22 * mm
+                c.setFont("Helvetica", 9)
+                c.setFillColorRGB(0.15, 0.15, 0.15)
+            c.drawString(mx, y, linea)
+            y -= 5 * mm
+        y -= 6 * mm
+
+    # Movimientos parciales
+    if y < 40 * mm:
+        c.showPage()
+        y = H - 22 * mm
+    c.setFillColorRGB(0.04, 0.04, 0.04)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(mx, y, f"{cfg['accion'].capitalize()}s parciales")
+    y -= 6 * mm
+    c.setFont("Helvetica-Bold", 8)
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawString(mx, y, "FECHA")
+    c.drawString(mx + 40 * mm, y, "VÍA")
+    c.drawRightString(W - mx, y, "MONTO")
+    y -= 2 * mm
+    c.setStrokeColorRGB(0.85, 0.85, 0.85)
+    c.line(mx, y, W - mx, y)
+    y -= 5 * mm
+    c.setFont("Helvetica", 9)
+    c.setFillColorRGB(0.1, 0.1, 0.1)
+    if pagos:
+        for p in pagos:
+            if y < 20 * mm:
+                c.showPage()
+                y = H - 22 * mm
+                c.setFont("Helvetica", 9)
+                c.setFillColorRGB(0.1, 0.1, 0.1)
+            if p["rendicion_id"]:
+                via = f"Rendición {codigo_rendicion(p['rendicion_id'])}"
+            elif p["externo"]:
+                via = "Externo"
+            else:
+                via = "—"
+            c.drawString(mx, y, str(p["fecha"]))
+            c.drawString(mx + 40 * mm, y, via[:38])
+            c.drawRightString(W - mx, y, f"${_miles(p['monto'])}")
+            y -= 5.5 * mm
+    else:
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(mx, y, f"Aún no hay {cfg['accion']}s registrados.")
+        y -= 5.5 * mm
+
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 def construir_zip_rendiciones(rendiciones: list[dict]) -> bytes:
     """Empaqueta un PDF por rendición en un .zip.
 

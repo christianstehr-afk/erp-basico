@@ -179,11 +179,24 @@ def obtener_documentos(
         params["NUM_PAG"] = pagina
         resp = session.get(cfg["url"], params=params, timeout=60)
         html = resp.content.decode("iso-8859-1", "replace")
-        if pagina == 1 and _es_pagina_de_login(html):
+        filas = parse_lista(html)
+        if pagina == 1 and not filas:
+            # No se reconoció ninguna fila de documento en la primera página.
+            # Antes esto solo se trataba como sesión perdida si el HTML calzaba
+            # con alguna de las frases de _MARCADORES_LOGIN (best-effort, nunca
+            # probado contra una sesión real vencida). En producción el SII
+            # devolvió una pantalla distinta que NO calzó con esas frases, así
+            # que el sync terminó "Listo" con 0 documentos sin avisar que en
+            # realidad la sesión se había caído.
+            # Esta empresa tiene documentos todos los meses desde mayo 2026, así
+            # que una primera página sin ninguna fila reconocible es en la
+            # práctica siempre síntoma de sesión vencida (o de que el SII
+            # cambió el HTML de esa pantalla) — nunca de que de verdad no hay
+            # documentos ese año. Tratamos ambos casos igual: hay que pedirle a
+            # Christian que vuelva a ingresar su Clave Tributaria.
             raise SIISessionExpirada(
                 "La sesión con el SII se perdió (probablemente por inactividad)."
             )
-        filas = parse_lista(html)
         if not filas:
             break
         docs.extend(f for f in filas if (f["fecha"] or "").startswith(str(anio)))

@@ -411,6 +411,25 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
     )
 
 
+def _pdf_gestion(request: Request, seccion: str, codigo: str):
+    """Devuelve el PDF del detalle de gestión de una factura (inline, para
+    abrirlo en el navegador): resumen + movimientos parciales."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    cfg = SECCIONES[seccion]
+    conn = db.get_conn()
+    try:
+        f = db.factura_pago_por_codigo(conn, codigo)
+        if not f:
+            return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
+        pagos = db.pagos_de_factura(conn, f["id"])
+    finally:
+        conn.close()
+    data = exportar._pdf_de_gestion_pago(f, pagos, cfg)
+    return Response(content=data, media_type="application/pdf")
+
+
 def _guardar_fecha_tope(request: Request, seccion: str, codigo: str, fecha_tope: str):
     if not _guard(request):
         return RedirectResponse("/", status_code=303)
@@ -540,6 +559,11 @@ def proveedores_detalle(request: Request, codigo: str):
     return _render_detalle(request, client, "proveedores", codigo)
 
 
+@app.get("/pagos/proveedores/{codigo}/pdf")
+def proveedores_pdf(request: Request, codigo: str):
+    return _pdf_gestion(request, "proveedores", codigo)
+
+
 @app.post("/pagos/proveedores/{codigo}/fecha-tope")
 def proveedores_fecha_tope(request: Request, codigo: str, fecha_tope: str = Form(...)):
     return _guardar_fecha_tope(request, "proveedores", codigo, fecha_tope)
@@ -575,6 +599,11 @@ def ingresos_detalle(request: Request, codigo: str):
     if not client:
         return RedirectResponse("/", status_code=303)
     return _render_detalle(request, client, "ingresos", codigo)
+
+
+@app.get("/pagos/ingresos/{codigo}/pdf")
+def ingresos_pdf(request: Request, codigo: str):
+    return _pdf_gestion(request, "ingresos", codigo)
 
 
 @app.post("/pagos/ingresos/{codigo}/fecha-tope")
