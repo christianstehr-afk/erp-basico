@@ -132,6 +132,14 @@
       </div>
     </div>
 
+    {% if sync and sync.boletas_error %}
+    <div style="border:1px solid #4a3a10;background:rgba(230,180,30,.08);color:#e6b41e;padding:12px 14px;border-radius:var(--radius);margin-bottom:20px;font-size:13px">
+      <strong style="font-family:var(--mono);letter-spacing:.06em">BOLETAS DE HONORARIOS</strong> —
+      {{ sync.boletas_error }} El resto de la app funciona normalmente; para reintentar,
+      cerrá sesión y volvé a entrar con el usuario y clave empresa correctos.
+    </div>
+    {% endif %}
+
     <div class="cockpit-grid">
 
       <!-- Cuadro 1 · Facturas rechazadas -->

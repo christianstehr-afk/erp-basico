@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import db, exportar, sii_docs, sync
+from . import db, exportar, sii_bhe, sii_docs, sync
 from .sii_client import SIIAuthError, SIIClient, SIISessionExpirada
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -48,6 +48,12 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 # Sesiones SII activas en memoria: sid -> SIIClient (nunca se guarda la clave)
 SII_SESSIONS: dict[str, SIIClient] = {}
+# Segunda sesión SII en paralelo, con la cuenta "empresa" (RUT + clave propios
+# de la empresa, distintos de los personales de SII_SESSIONS). Se usa SOLO
+# para boletas de honorarios recibidas (ver sii_bhe.py); si el login empresa
+# falla, sencillamente no hay entrada acá para ese sid y las boletas no se
+# sincronizan (no bloquea el resto de la app).
+SII_SESSIONS_BHE: dict[str, SIIClient] = {}
 
 
 @app.on_event("startup")
@@ -60,6 +66,13 @@ def _current_client(request: Request) -> SIIClient | None:
     return SII_SESSIONS.get(sid) if sid else None
 
 
+def _current_client_bhe(request: Request) -> SIIClient | None:
+    """Sesión "empresa" (boletas de honorarios). Puede no existir aunque haya
+    sesión personal activa, si ese login falló o no se sincronizó boletas."""
+    sid = request.session.get("sid")
+    return SII_SESSIONS_BHE.get(sid) if sid else None
+
+
 def _invalidar_sesion(request: Request) -> None:
     """Descarta la sesión SII guardada (por sid) cuando se detecta que el SII
     ya la cerró de su lado. No vuelve a loguear solo: la próxima carga de "/"
@@ -67,6 +80,7 @@ def _invalidar_sesion(request: Request) -> None:
     sid = request.session.pop("sid", None)
     if sid:
         SII_SESSIONS.pop(sid, None)
+        SII_SESSIONS_BHE.pop(sid, None)
 
 
 _MSG_SESION_PERDIDA = (
@@ -121,12 +135,14 @@ def index(request: Request, relogin: int = 0, rut: str = ""):
             "request": request,
             "error": _MSG_SESION_PERDIDA if relogin else None,
             "rut_prefill": rut,
+            "rut_empresa_prefill": EMPRESA_RUT,
         },
     )
 
 
 @app.post("/login", response_class=HTMLResponse)
-def login(request: Request, rut: str = Form(...), clave: str = Form(...)):
+def login(request: Request, rut: str = Form(...), clave: str = Form(...),
+          rut_empresa: str = Form(...), clave_empresa: str = Form(...)):
     client = SIIClient()
     try:
         client.login(rut, clave)
@@ -134,7 +150,8 @@ def login(request: Request, rut: str = Form(...), clave: str = Form(...)):
     except SIIAuthError as exc:
         return templates.TemplateResponse(
             "login.html",
-            {"request": request, "error": str(exc), "rut_prefill": rut},
+            {"request": request, "error": str(exc), "rut_prefill": rut,
+             "rut_empresa_prefill": rut_empresa},
             status_code=401,
         )
 
@@ -142,10 +159,26 @@ def login(request: Request, rut: str = Form(...), clave: str = Form(...)):
     SII_SESSIONS[sid] = client
     request.session["sid"] = sid
 
+    # Segundo login, con la cuenta "empresa" — solo para boletas de
+    # honorarios recibidas (ver sii_bhe.py). A propósito NO bloquea el acceso
+    # a la app si falla: la persona igual puede entrar y usar el resto del
+    # ERP; el aviso queda en el panel (sync.estado_sync["boletas_error"]).
+    client_bhe: SIIClient | None = None
+    try:
+        client_bhe = SIIClient()
+        client_bhe.login(rut_empresa, clave_empresa)
+        SII_SESSIONS_BHE[sid] = client_bhe
+    except SIIAuthError as exc:
+        client_bhe = None
+        sync.estado_sync["boletas_error"] = (
+            f"No se pudo iniciar sesión con la cuenta empresa (boletas de honorarios): {exc}"
+        )
+
     # Dispara la sincronización en segundo plano (no bloquea el login): el
     # cockpit, al cargar, ve `sync.corriendo=True` y muestra su barra de
     # progreso automáticamente mientras la sincronización avanza.
-    sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC)
+    sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC,
+                           client_bhe=client_bhe, rut_empresa=rut_empresa)
 
     return RedirectResponse("/", status_code=303)
 
@@ -155,7 +188,9 @@ def sincronizar_ahora(request: Request):
     client = _current_client(request)
     if not client or not client.rut:
         return JSONResponse({"ok": False, "error": "no-session"}, status_code=401)
-    sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC)
+    client_bhe = _current_client_bhe(request)
+    sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC,
+                           client_bhe=client_bhe, rut_empresa=client_bhe.rut if client_bhe else None)
     return JSONResponse({"ok": True})
 
 
@@ -231,12 +266,33 @@ def _factura_por_codigo(codigo: str):
     conn = db.get_conn()
     try:
         return conn.execute(
-            "SELECT documento, folio, razon_social, rut_contraparte, tipo "
+            "SELECT documento, folio, razon_social, rut_contraparte, tipo, pdf_href_bhe "
             "FROM facturas WHERE codigo_sii = ?",
             (codigo,),
         ).fetchone()
     finally:
         conn.close()
+
+
+_MSG_BHE_SIN_SESION = (
+    "No hay sesión activa con la cuenta empresa (necesaria para boletas de honorarios). "
+    "Volvé a iniciar sesión ingresando también el usuario y clave empresa."
+)
+
+
+def _html_bhe_sin_sesion() -> HTMLResponse:
+    """Igual que _html_sesion_perdida, pero para cuando falta/se perdió la
+    sesión "empresa" que se usa solo para boletas de honorarios."""
+    html = (
+        "<div style=\"font-family:Arial,sans-serif;background:#0f0f0f;color:#eee;"
+        "height:100vh;display:flex;flex-direction:column;align-items:center;"
+        "justify-content:center;gap:16px;text-align:center;padding:24px\">"
+        f"<p style=\"max-width:420px\">{_MSG_BHE_SIN_SESION}</p>"
+        "<a href=\"/?relogin=1\" target=\"_top\" "
+        "style=\"color:#2ecc71;font-weight:700;text-decoration:none\">"
+        "Iniciar sesión de nuevo →</a></div>"
+    )
+    return HTMLResponse(html, status_code=401)
 
 
 def _nombre_pdf(row) -> str:
@@ -271,8 +327,28 @@ def pdf_ver(request: Request, codigo: str):
     if not client or not client.rut:
         return RedirectResponse("/", status_code=303)
     row = _factura_por_codigo(codigo)
-    fuente = _FUENTE_POR_TIPO.get(row["tipo"]) if row else None
-    if not row or not fuente:
+    if not row:
+        return Response("PDF no disponible", status_code=404)
+
+    # Boletas de honorarios: PDF distinto, con la sesión "empresa" (no la
+    # personal) y el href guardado al parsear el mes (ver sii_bhe.py).
+    if codigo.startswith("BHE-"):
+        client_bhe = _current_client_bhe(request)
+        if not client_bhe:
+            return _html_bhe_sin_sesion()
+        try:
+            data = sii_bhe.obtener_pdf_bytes(client_bhe.session, row["pdf_href_bhe"])
+        except sii_bhe.BHEError:
+            sid = request.session.get("sid")
+            if sid:
+                SII_SESSIONS_BHE.pop(sid, None)
+            return _html_bhe_sin_sesion()
+        if not data:
+            return Response("No se pudo obtener el PDF de la boleta desde el SII. Intenta de nuevo.", status_code=502)
+        return Response(content=data, media_type="application/pdf")
+
+    fuente = _FUENTE_POR_TIPO.get(row["tipo"])
+    if not fuente:
         return Response("PDF no disponible", status_code=404)
     try:
         data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
@@ -292,8 +368,29 @@ def pdf_descargar(request: Request, codigo: str):
     if not client or not client.rut:
         return RedirectResponse("/", status_code=303)
     row = _factura_por_codigo(codigo)
-    fuente = _FUENTE_POR_TIPO.get(row["tipo"]) if row else None
-    if not row or not fuente:
+    if not row:
+        return Response("PDF no disponible", status_code=404)
+
+    if codigo.startswith("BHE-"):
+        client_bhe = _current_client_bhe(request)
+        if not client_bhe:
+            return _html_bhe_sin_sesion()
+        try:
+            data = sii_bhe.obtener_pdf_bytes(client_bhe.session, row["pdf_href_bhe"])
+        except sii_bhe.BHEError:
+            sid = request.session.get("sid")
+            if sid:
+                SII_SESSIONS_BHE.pop(sid, None)
+            return _html_bhe_sin_sesion()
+        if not data:
+            return Response("No se pudo obtener el PDF de la boleta desde el SII. Intenta de nuevo.", status_code=502)
+        return Response(
+            content=data, media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{_nombre_pdf(row)}"'},
+        )
+
+    fuente = _FUENTE_POR_TIPO.get(row["tipo"])
+    if not fuente:
         return Response("PDF no disponible", status_code=404)
     try:
         data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
@@ -431,14 +528,23 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
     # El documento original vive solo en el SII (no se guarda copia local);
     # se obtiene con la sesión activa del usuario, igual que /pdf/{codigo}/ver.
     # Si la sesión expiró o el SII no responde, igual se devuelve el PDF de
-    # gestión (sin el original) en vez de fallar.
+    # gestión (sin el original) en vez de fallar. Las boletas de honorarios
+    # usan la sesión "empresa" y su propio href guardado al sincronizar.
     factura_bytes = None
-    fuente = _FUENTE_POR_TIPO.get(cfg["tipo"])
-    if fuente:
-        try:
-            factura_bytes = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
-        except SIISessionExpirada:
-            factura_bytes = None
+    if codigo.startswith("BHE-"):
+        client_bhe = _current_client_bhe(request)
+        if client_bhe:
+            try:
+                factura_bytes = sii_bhe.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bhe"])
+            except sii_bhe.BHEError:
+                factura_bytes = None
+    else:
+        fuente = _FUENTE_POR_TIPO.get(cfg["tipo"])
+        if fuente:
+            try:
+                factura_bytes = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+            except SIISessionExpirada:
+                factura_bytes = None
 
     data = exportar._pdf_de_gestion_pago(f, pagos, cfg, incluye_original=bool(factura_bytes))
     if factura_bytes:

@@ -21,6 +21,7 @@
       <h1>Acceso al SII</h1>
       <p class="sub">Ingresa con el RUT y la Clave Tributaria de tu cuenta del SII.</p>
       <form method="post" action="/login" autocomplete="off">
+        <div style="font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--green);margin-bottom:10px">Usuario personal</div>
         <div class="field">
           <label>RUT</label>
           <input name="rut" type="text" placeholder="76.123.456-7" autocomplete="username" required value="{{ rut_prefill or '' }}">
@@ -29,10 +30,25 @@
           <label>Clave Tributaria</label>
           <input name="clave" type="password" autocomplete="current-password" required>
         </div>
+
+        <div style="font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--green);margin:22px 0 10px">Usuario empresa</div>
+        <div class="field">
+          <label>RUT empresa</label>
+          <input name="rut_empresa" type="text" placeholder="77.708.215-9" autocomplete="off" required value="{{ rut_empresa_prefill or '' }}">
+        </div>
+        <div class="field">
+          <label>Clave Tributaria empresa</label>
+          <input name="clave_empresa" type="password" autocomplete="off" required>
+        </div>
+
         <button class="btn-primary" type="submit">Entrar</button>
         {% if error %}<div class="err">{{ error }}</div>{% else %}<div class="err"></div>{% endif %}
       </form>
-      <p class="note">Tus credenciales se usan solo para iniciar sesión en el SII durante esta sesión. No se almacenan.</p>
+      <p class="note">
+        El usuario personal se usa para facturas y notas de crédito/débito; el usuario
+        empresa, solo para consultar boletas de honorarios recibidas. Ambas credenciales
+        se usan únicamente para iniciar sesión en el SII durante esta sesión. No se almacenan.
+      </p>
     </div>
   </section>
 </body>

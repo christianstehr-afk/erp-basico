@@ -160,6 +160,11 @@ def _migrar(conn: sqlite3.Connection) -> None:
         "codigo_sii": "TEXT", "documento": "TEXT", "pdf_path": "TEXT",
         "fecha_reclamo": "TEXT", "fecha_acuse": "TEXT", "fecha_pago_tope": "TEXT",
         "descripcion": "TEXT", "anulada_por": "TEXT", "ref_procesada": "INTEGER DEFAULT 0",
+        # URL remota del PDF de una boleta de honorarios en el SII (no una ruta
+        # local: esas boletas no se pueden descargar de antemano, se piden con
+        # la sesión "empresa" al momento de verlas). Solo se usa para tipo='compra'
+        # con codigo_sii que empieza con "BHE-"; en facturas normales queda NULL.
+        "pdf_href_bhe": "TEXT",
     }
     for col, ddl in nuevas.items():
         if col not in existentes:
@@ -213,6 +218,50 @@ def upsert_documento(conn: sqlite3.Connection, doc: dict, tipo: str) -> None:
             tipo_dte        = excluded.tipo_dte,
             folio           = excluded.folio,
             fecha_emision   = excluded.fecha_emision
+        """,
+        params,
+    )
+
+
+def upsert_boleta(conn: sqlite3.Connection, doc: dict) -> None:
+    """Inserta o actualiza una boleta de honorarios recibida en `facturas`
+    (tipo='compra'), reutilizando la misma tabla que las facturas del SII.
+
+    `doc` esperado (de sii_bhe.parse_mes):
+      codigo, folio, rut_contraparte, razon_social, fecha, monto, pdf_href.
+
+    `codigo` debe venir ya prefijado como "BHE-..." (único, ver sii_bhe.py) y
+    es el que identifica el registro (ON CONFLICT(codigo_sii)). No se toca
+    tipo_dte: las boletas de honorarios no son DTE, no tienen ese código.
+    """
+    params = {
+        "codigo": doc["codigo"],
+        "folio": doc.get("folio"),
+        "rut_contraparte": doc.get("rut_contraparte"),
+        "razon_social": doc.get("razon_social"),
+        "fecha": doc.get("fecha"),
+        "monto": doc.get("monto", 0),
+        "estado": doc.get("estado") or "Vigente",
+        "pdf_href": doc.get("pdf_href"),
+    }
+    conn.execute(
+        """
+        INSERT INTO facturas
+            (tipo, codigo_sii, tipo_dte, documento, folio,
+             rut_contraparte, razon_social, fecha_emision, total, estado,
+             fecha_pago_tope, pdf_href_bhe)
+        VALUES
+            ('compra', :codigo, NULL, 'Boleta de honorarios electrónica', :folio,
+             :rut_contraparte, :razon_social, :fecha, :monto, :estado,
+             :fecha, :pdf_href)
+        ON CONFLICT(codigo_sii) DO UPDATE SET
+            estado          = excluded.estado,
+            total           = excluded.total,
+            rut_contraparte = excluded.rut_contraparte,
+            razon_social    = excluded.razon_social,
+            folio           = excluded.folio,
+            fecha_emision   = excluded.fecha_emision,
+            pdf_href_bhe    = excluded.pdf_href_bhe
         """,
         params,
     )
@@ -281,7 +330,7 @@ def factura_pago_por_codigo(conn: sqlite3.Connection, codigo: str) -> sqlite3.Ro
         """
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo, f.pdf_path,
-               f.descripcion, f.anulada_por,
+               f.descripcion, f.anulada_por, f.pdf_href_bhe,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.codigo_sii = ?
