@@ -273,6 +273,74 @@ def obtener_boletas_recibidas(
     return boletas
 
 
+def diagnostico(session: requests.Session, url: str, params: dict) -> str:
+    """Vuelca links, tablas y formularios de una página del SII (con la
+    sesión ya autenticada) en texto plano, para poder ajustar el parser sin
+    tener acceso directo al SII. Ver /debug/bhe/inspeccionar en main.py.
+
+    Nunca lanza: cualquier error de red queda como texto en el resultado.
+    """
+    try:
+        resp = session.get(url, params=params, timeout=30)
+    except requests.RequestException as exc:
+        return f"Error de red pidiendo {url} (params={params}): {exc}"
+
+    html = resp.content.decode("iso-8859-1", "replace")
+    soup = BeautifulSoup(html, "html.parser")
+
+    out = [
+        f"URL pedida: {url}",
+        f"Params:     {params}",
+        f"URL final:  {resp.url}",
+        f"Status:     {resp.status_code}  ·  bytes: {len(resp.content)}",
+        f"¿Pantalla de login?: {_es_pagina_de_login(html)}",
+        "",
+        "=== FORMULARIOS (action | method | inputs) ===",
+    ]
+    forms = soup.find_all("form")
+    if not forms:
+        out.append("(ninguno)")
+    for f in forms:
+        inputs = [
+            f"{i.get('name')}={i.get('value', '')!r}"
+            for i in f.find_all(["input", "select"])
+            if i.get("name")
+        ]
+        out.append(f"{f.get('action')}  |  {f.get('method', 'get')}  |  {', '.join(inputs)}")
+
+    out.append("")
+    out.append("=== LINKS (href | texto) ===")
+    vistos: set[tuple[str, str]] = set()
+    n = 0
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        texto = a.get_text(" ", strip=True)
+        key = (href, texto)
+        if key in vistos:
+            continue
+        vistos.add(key)
+        out.append(f"{href}  |  {texto}")
+        n += 1
+        if n >= 300:
+            out.append("… (cortado en 300 links)")
+            break
+
+    tablas = soup.find_all("table")
+    out.append("")
+    out.append(f"=== TABLAS ({len(tablas)}) ===")
+    for i, t in enumerate(tablas):
+        filas = t.find_all("tr")
+        out.append(f"--- tabla {i}: {len(filas)} filas ---")
+        for tr in filas[:6]:
+            celdas = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
+            out.append(" | ".join(celdas))
+
+    out.append("")
+    out.append("=== HTML crudo (primeros 6000 caracteres) ===")
+    out.append(html[:6000])
+    return "\n".join(out)
+
+
 def obtener_pdf_bytes(session: requests.Session, pdf_href: str) -> bytes | None:
     """Descarga el PDF de una boleta desde el href guardado al parsear el mes."""
     if not pdf_href:

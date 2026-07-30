@@ -15,7 +15,9 @@ from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -205,6 +207,37 @@ def sync_estado(request: Request):
     if sync.estado_sync.get("sesion_perdida"):
         _invalidar_sesion(request)
     return JSONResponse(sync.estado_sync)
+
+
+@app.get("/debug/bhe/inspeccionar", response_class=PlainTextResponse)
+def debug_bhe_inspeccionar(request: Request, anio: int = ANIO, url: str = ""):
+    """Herramienta temporal de diagnóstico: usa la sesión empresa real (ya
+    logueada) para volcar los links/tablas/formularios de una página del SII
+    de boletas de honorarios, sin necesitar credenciales ni acceso directo al
+    SII para ajustar sii_bhe.py.
+
+    Sin `url`: consulta el informe anual (mismo primer paso que el sync).
+    Con `url`: consulta esa URL tal cual (para inspeccionar, p. ej., el link
+    a un mes que haya aparecido en el volcado anterior).
+    """
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    client_bhe = _current_client_bhe(request)
+    if not client_bhe:
+        return PlainTextResponse(
+            "No hay sesión empresa activa. Cerrá sesión y volvé a entrar con "
+            "el usuario y clave empresa.", status_code=401,
+        )
+    from .sii_client import normalizar_rut
+    if url:
+        target, params = url, {}
+    else:
+        numero, dv = normalizar_rut(client_bhe.rut)
+        target = sii_bhe.INFORME_ANUAL_URL
+        params = {"rut_arrastre": numero, "dv_arrastre": dv, "cbanoinformeanual": anio}
+    texto = sii_bhe.diagnostico(client_bhe.session, target, params)
+    return PlainTextResponse(texto)
 
 
 def _vista_documentos(request: Request, tipo: str, titulo: str, col_contraparte: str,
