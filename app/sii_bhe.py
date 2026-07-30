@@ -309,7 +309,7 @@ def diagnostico(session: requests.Session, url: str, params: dict) -> str:
         out.append(f"{f.get('action')}  |  {f.get('method', 'get')}  |  {', '.join(inputs)}")
 
     out.append("")
-    out.append("=== LINKS (href | texto) ===")
+    out.append("=== LINKS <a href> (href | texto) ===")
     vistos: set[tuple[str, str]] = set()
     n = 0
     for a in soup.find_all("a", href=True):
@@ -325,6 +325,25 @@ def diagnostico(session: requests.Session, url: str, params: dict) -> str:
             out.append("… (cortado en 300 links)")
             break
 
+    # Muchas páginas legadas del SII arman la navegación con JavaScript
+    # (onclick + document.write) en vez de <a href> planos. Se busca en TODO
+    # el texto crudo, no solo en el HTML parseado.
+    out.append("")
+    out.append("=== Menciones de .cgi en el HTML crudo (fuera o dentro de tags) ===")
+    cgis = sorted(set(re.findall(r"[\w/\.\-]+\.cgi[^\s\"'<>)]*", html)))
+    if not cgis:
+        out.append("(ninguna)")
+    for c in cgis[:100]:
+        out.append(c)
+
+    out.append("")
+    out.append("=== Atributos onclick ===")
+    onclicks = sorted(set(re.findall(r'onclick\s*=\s*"([^"]*)"', html) + re.findall(r"onclick\s*=\s*'([^']*)'", html)))
+    if not onclicks:
+        out.append("(ninguno)")
+    for oc in onclicks[:100]:
+        out.append(oc)
+
     tablas = soup.find_all("table")
     out.append("")
     out.append(f"=== TABLAS ({len(tablas)}) ===")
@@ -335,9 +354,38 @@ def diagnostico(session: requests.Session, url: str, params: dict) -> str:
             celdas = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
             out.append(" | ".join(celdas))
 
+    # Scripts locales (mismo dominio) cuyo nombre sugiere que arman el
+    # link/click de cada mes (p. ej. "links" en el nombre). Se priorizan esos
+    # por sobre utilitarios genéricos (validación, comunas, etc.) para no
+    # inflar la respuesta con contenido poco probable de ser relevante.
     out.append("")
-    out.append("=== HTML crudo (primeros 6000 caracteres) ===")
-    out.append(html[:6000])
+    out.append("=== <script src=...> relevantes (mismo dominio, contenido) ===")
+    vistos_js: set[str] = set()
+    candidatos = [
+        s["src"] for s in soup.find_all("script", src=True)
+        if "link" in s["src"].lower() or "detall" in s["src"].lower() or "mes" in s["src"].lower()
+    ]
+    for src in candidatos:
+        if src in vistos_js:
+            continue
+        vistos_js.add(src)
+        abs_src = urljoin(resp.url, src)
+        try:
+            r_js = session.get(abs_src, timeout=20)
+            js_txt = r_js.content.decode("iso-8859-1", "replace")
+        except requests.RequestException as exc:
+            out.append(f"--- {abs_src}: error de red ({exc}) ---")
+            continue
+        out.append(f"--- {abs_src} ({len(js_txt)} caracteres) ---")
+        out.append(js_txt[:8000])
+        out.append("")
+    if not candidatos:
+        out.append("(ningún <script src> con nombre sugerente; ver lista completa de scripts abajo)")
+        out.append(", ".join(s["src"] for s in soup.find_all("script", src=True)))
+
+    out.append("")
+    out.append(f"=== HTML crudo (primeros 20000 de {len(html)} caracteres) ===")
+    out.append(html[:20000])
     return "\n".join(out)
 
 
