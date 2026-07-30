@@ -10,21 +10,41 @@ requiere iniciar sesión con el RUT de la EMPRESA (no con el RUT personal que
 se usa para las facturas). Por eso vive en su propia sesión SII (ver
 SII_SESSIONS_BHE en main.py) y su propio módulo.
 
-IMPORTANTE — estado de este módulo (30-jul-2026): el informe anual construye
-el link a cada mes con JavaScript puro (document.write), no con <a href>
-planos, así que hubo que sacar el patrón real de la URL inspeccionando el
-HTML real (ver /debug/bhe/inspeccionar en main.py) en vez de heurísticas:
+IMPORTANTE — estado de este módulo (30-jul-2026), confirmado contra el SII
+real vía /debug/bhe/inspeccionar en main.py:
 
-  TMBCOC_InformeMensualBheRec.cgi?cbanoinformemensual=<año>
-    &cbmesinformemensual=<MM, 2 dígitos>&dv_arrastre=<dv>
-    &pagina_solicitada=<0,1,2,...>&rut_arrastre=<rut sin dv>
+- El informe anual y el mensual arman TODO con JavaScript puro
+  (document.write); no hay <a href> ni <table> en el HTML crudo.
+- La URL de cada mes se arma directamente (no se scrapea un link):
 
-Esa parte ya está confirmada contra el SII real. Lo que SIGUE sin probar
-contra datos reales es el parseo de las filas de boletas dentro de esa
-página mensual (`parse_mes`): está escrito de forma defensiva (heurísticas
-sobre RUT/fecha/montos, no nombres de columna fijos) porque aún no se vio el
-HTML real de esa página. Es muy probable que necesite un ajuste una vez que
-se vea (usar /debug/bhe/inspeccionar?url=<url de un mes con boletas>).
+    TMBCOC_InformeMensualBheRec.cgi?cbanoinformemensual=<año>
+      &cbmesinformemensual=<MM, 2 dígitos>&dv_arrastre=<dv>
+      &pagina_solicitada=<0,1,2,...>&rut_arrastre=<rut sin dv>
+
+- Esa página mensual trae los datos de cada boleta como asignaciones
+  directas a un array JS, una por campo e índice de fila (1..CantidadFilas):
+
+    arr_informe_mensual['nroboleta_1']          = "23";
+    arr_informe_mensual['rutemisor_1']          = "10971552";
+    arr_informe_mensual['dvemisor_1']           = "2";
+    arr_informe_mensual['nombre_emisor_1']      = "JAIME ARTURO MONSALVE VERA ";
+    arr_informe_mensual['fecha_boleta_1']       = "01/06/2026";
+    arr_informe_mensual['totalhonorarios_1']    = formatMiles("764700",'.');
+    arr_informe_mensual['honorariosliquidos_1'] = formatMiles("648083",'.');
+    arr_informe_mensual['retencion_receptor_1'] = formatMiles("116617",'.');
+    arr_informe_mensual['estado_1']             = "N";
+    arr_informe_mensual['fechaanulacion_1']     = " ";
+    arr_informe_mensual['codigobarras_1']       = "10971552000239966A55";
+
+  `parse_mes` lee esas asignaciones directamente con regex (no busca tablas).
+
+- El PDF NO es un link: el botón "Ver" hace un POST a
+  TMBCOT_ConsultaBoletaPdf.cgi con (al menos) txt_codigobarras=<codigobarras>.
+  El JS también manda txt_cod_39 (código de barras Code39, calculado con una
+  función JS que no se replicó en Python) y txt_descr_comuna (nombre de
+  comuna). AÚN NO CONFIRMADO si el SII los exige o si basta con
+  txt_codigobarras: `obtener_pdf_bytes` es un intento best-effort, revisar
+  si falla siempre (ver tarea pendiente en el repo).
 """
 from __future__ import annotations
 
@@ -41,15 +61,18 @@ from .sii_client import normalizar_rut
 MENU_URL = "https://loa.sii.cl/cgi_IMT/TMBCOC_MenuConsultasContribRec.cgi"
 INFORME_ANUAL_URL = "https://loa.sii.cl/cgi_IMT/TMBCOC_InformeAnualBheRec.cgi"
 INFORME_MENSUAL_URL = "https://loa.sii.cl/cgi_IMT/TMBCOC_InformeMensualBheRec.cgi"
+PDF_URL = "https://loa.sii.cl/cgi_IMT/TMBCOT_ConsultaBoletaPdf.cgi"
 
 MESES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
 
-_RUT_RE = re.compile(r"\b(\d{1,2}\.?\d{3}\.?\d{3})-?([\dkK])\b")
-_FECHA_RE = re.compile(r"\b(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})\b")
-_MONTO_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b|\b\d{4,}\b")
+# arr_informe_mensual['campo_N'] = "valor";  o  = formatMiles("valor", '.');
+_ARR_ITEM_RE = re.compile(
+    r"arr_informe_mensual\[\s*'(\w+?)_(\d+)'\s*\]\s*=\s*"
+    r"(?:formatMiles\(\s*\"([^\"]*)\"|\"([^\"]*)\")"
+)
 
 
 class BHEError(Exception):
@@ -108,103 +131,64 @@ def _meses_a_revisar(anio: int, desde: str | None) -> range:
     return range(1, 13)
 
 
-def _pdf_link_de_fila(tr, base_url: str) -> str | None:
-    """Busca dentro de una fila un link que probablemente descargue el PDF de
-    la boleta (heurística: contiene 'pdf' en el href, o el texto del link es
-    'Ver'/'PDF'/un ícono sin texto)."""
-    for a in tr.find_all("a", href=True):
-        href = a["href"]
-        texto = _norm(a.get_text(" ", strip=True))
-        if "pdf" in href.lower() or "pdf" in texto or texto in ("ver", "visualizar", ""):
-            return urljoin(base_url, href)
-    return None
-
-
 def parse_mes(html: str, base_url: str, rut_empresa: str) -> list[dict]:
     """Extrae las boletas de una página de detalle mensual.
 
-    Heurística por fila (sin asumir nombres/orden de columna fijos):
-      - RUT del emisor: primer patrón de RUT en la fila que NO sea el RUT de
-        la empresa (que puede aparecer repetido en cada fila del listado).
-      - Folio: primer número "suelto" (sin puntos de miles) de la fila.
-      - Fecha: primer patrón de fecha (DD/MM/YYYY o YYYY-MM-DD).
-      - Monto: el mayor número con formato de miles (1.234) de la fila — en
-        general el bruto es el monto más alto de la boleta.
-      - Razón social / nombre: el texto de la celda más larga que no sea
-        puramente numérica ni el RUT.
+    Esta página no trae una tabla HTML: arma todo con JavaScript
+    (arr_informe_mensual['campo_N'] = ...; luego un for que hace
+    document.write). Se leen directamente esas asignaciones, agrupadas por
+    índice N (una boleta por índice, de 1 a CantidadFilas).
+
+    `base_url` y `rut_empresa` no se usan para el parseo en sí (no hace
+    falta resolver links relativos ni comparar contra el RUT de la empresa,
+    a diferencia del intento anterior); se mantienen en la firma para no
+    tener que tocar el resto del módulo.
     """
-    soup = BeautifulSoup(html, "html.parser")
-    rut_emp_norm, dv_emp = normalizar_rut(rut_empresa)
-    rut_emp_fmt = f"{rut_emp_norm}-{dv_emp}"
+    campos: dict[int, dict[str, str]] = {}
+    for m in _ARR_ITEM_RE.finditer(html):
+        campo, idx_str, val_formateado, val_plano = m.groups()
+        valor = val_formateado if val_formateado is not None else val_plano
+        campos.setdefault(int(idx_str), {})[campo] = valor
 
     boletas: list[dict] = []
-    for tabla in soup.find_all("table"):
-        filas = tabla.find_all("tr")
-        if len(filas) < 2:
+    for idx in sorted(campos):
+        c = campos[idx]
+        folio_raw = c.get("nroboleta")
+        rut_raw = c.get("rutemisor")
+        dv_raw = c.get("dvemisor")
+        if not (folio_raw and rut_raw and dv_raw):
             continue
-        for tr in filas:
-            celdas = tr.find_all("td")
-            if len(celdas) < 3:
-                continue
-            textos = [c.get_text(" ", strip=True) for c in celdas]
+        try:
+            folio = int(folio_raw)
+        except ValueError:
+            continue
 
-            # Identifica las celdas que SON un RUT (para no confundir sus
-            # dígitos con folio/monto más abajo: p. ej. "98.765.432-1" calza
-            # con el patrón de monto con puntos de miles si no se excluye).
-            rut_cells: set[int] = set()
-            ruts_en_fila: list[str] = []
-            for i, c in enumerate(textos):
-                m = _RUT_RE.search(c)
-                if m:
-                    rut_cells.add(i)
-                    ruts_en_fila.append(f"{m.group(1).replace('.', '')}-{m.group(2).upper()}")
+        # Boleta anulada: no corresponde pagarla, se excluye del listado.
+        if (c.get("fechaanulacion") or "").strip():
+            continue
 
-            ruts_ajenos = [r for r in ruts_en_fila if r != rut_emp_fmt]
-            if not ruts_ajenos:
-                continue  # fila sin RUT de un tercero: no es una boleta (cabecera, totales, etc.)
-            rut_emisor = ruts_ajenos[0]
+        rut_emisor = f"{rut_raw}-{dv_raw.upper()}"
+        fecha_iso = _fecha_a_iso(c.get("fecha_boleta") or "")
+        # Lo que la empresa efectivamente le paga al emisor es el líquido
+        # (bruto menos la retención, que se entera al SII como PPM del
+        # emisor, no se le paga a él) — es lo que corresponde trackear como
+        # "monto" en Pago a proveedores.
+        monto = _solo_digitos(c.get("honorariosliquidos") or "0")
+        codigo_barras = (c.get("codigobarras") or "").strip()
+        codigo = f"BHE-{codigo_barras}" if codigo_barras else f"BHE-{rut_emisor}-{folio}"
 
-            resto = [c for i, c in enumerate(textos) if i not in rut_cells]
-            resto_txt = " | ".join(resto)
-
-            fecha_m = _FECHA_RE.search(resto_txt)
-            fecha_iso = _fecha_a_iso(fecha_m.group(1)) if fecha_m else None
-
-            montos = [_solo_digitos(m.group(0)) for m in _MONTO_RE.finditer(resto_txt)]
-            montos = [m for m in montos if m > 0]
-            if not montos:
-                continue
-            monto = max(montos)
-
-            # Folio: primer entero "suelto" (1-6 dígitos) entre las celdas que
-            # no son RUT.
-            folio = None
-            for c in resto:
-                c_limpio = c.strip()
-                if re.fullmatch(r"\d{1,6}", c_limpio):
-                    folio = int(c_limpio)
-                    break
-
-            # Nombre: celda no numérica más larga entre las que no son RUT.
-            candidatos_nombre = [c for c in resto if c and not re.fullmatch(r"[\d.\-/ ]+", c)]
-            razon_social = max(candidatos_nombre, key=len) if candidatos_nombre else rut_emisor
-
-            pdf_href = _pdf_link_de_fila(tr, base_url)
-
-            if folio is None:
-                # Sin folio no hay forma confiable de armar un codigo_sii único
-                # y estable; se descarta la fila en vez de arriesgar duplicados.
-                continue
-
-            boletas.append({
-                "codigo": f"BHE-{rut_emisor}-{folio}",
-                "folio": folio,
-                "rut_contraparte": rut_emisor,
-                "razon_social": razon_social,
-                "fecha": fecha_iso,
-                "monto": monto,
-                "pdf_href": pdf_href,
-            })
+        boletas.append({
+            "codigo": codigo,
+            "folio": folio,
+            "rut_contraparte": rut_emisor,
+            "razon_social": (c.get("nombre_emisor") or "").strip() or rut_emisor,
+            "fecha": fecha_iso,
+            "monto": monto,
+            # No es una URL: es el código de barras de la boleta, que es lo
+            # que exige el POST a TMBCOT_ConsultaBoletaPdf.cgi para pedir el
+            # PDF (ver obtener_pdf_bytes más abajo).
+            "pdf_href": codigo_barras or None,
+        })
     return boletas
 
 
@@ -407,11 +391,32 @@ def diagnostico(session: requests.Session, url: str, params: dict) -> str:
 
 
 def obtener_pdf_bytes(session: requests.Session, pdf_href: str) -> bytes | None:
-    """Descarga el PDF de una boleta desde el href guardado al parsear el mes."""
+    """Descarga el PDF de una boleta.
+
+    `pdf_href` es en realidad el código de barras de la boleta (ver
+    parse_mes) — esta página NO tiene un link directo al PDF: el botón "Ver"
+    del SII hace un POST a TMBCOT_ConsultaBoletaPdf.cgi con el código de
+    barras. El JS del SII también manda txt_cod_39 (el código de barras
+    codificado en Code39, calculado ahí mismo con una función JS que no se
+    replicó en Python) y txt_descr_comuna (nombre de la comuna); todavía no
+    está confirmado si el SII los exige o si basta con txt_codigobarras —
+    esto es un intento best-effort, no una implementación verificada.
+    """
     if not pdf_href:
         return None
     try:
-        resp = session.get(pdf_href, timeout=60)
+        resp = session.post(
+            PDF_URL,
+            data={
+                "origen": "RECIBIDOS",
+                "veroriginal": "si",
+                "nro_boleta": "0",
+                "txt_codigobarras": pdf_href,
+                "txt_cod_39": "",
+                "txt_descr_comuna": "",
+            },
+            timeout=60,
+        )
     except requests.RequestException:
         return None
     if resp.status_code == 200 and resp.content[:5] == b"%PDF-":

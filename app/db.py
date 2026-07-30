@@ -160,10 +160,12 @@ def _migrar(conn: sqlite3.Connection) -> None:
         "codigo_sii": "TEXT", "documento": "TEXT", "pdf_path": "TEXT",
         "fecha_reclamo": "TEXT", "fecha_acuse": "TEXT", "fecha_pago_tope": "TEXT",
         "descripcion": "TEXT", "anulada_por": "TEXT", "ref_procesada": "INTEGER DEFAULT 0",
-        # URL remota del PDF de una boleta de honorarios en el SII (no una ruta
-        # local: esas boletas no se pueden descargar de antemano, se piden con
-        # la sesión "empresa" al momento de verlas). Solo se usa para tipo='compra'
-        # con codigo_sii que empieza con "BHE-"; en facturas normales queda NULL.
+        # Para boletas de honorarios (codigo_sii que empieza con "BHE-"): el
+        # código de barras de la boleta, NO una URL ni una ruta local. El SII
+        # no tiene un link directo al PDF de una boleta; su código de barras
+        # es lo que hay que mandarle (con la sesión "empresa") para pedirlo
+        # al momento de verlo (ver sii_bhe.obtener_pdf_bytes). En facturas
+        # normales (DTE) esta columna queda NULL.
         "pdf_href_bhe": "TEXT",
     }
     for col, ddl in nuevas.items():
