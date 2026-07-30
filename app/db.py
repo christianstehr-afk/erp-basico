@@ -105,6 +105,20 @@ CREATE TABLE IF NOT EXISTS pagos (
 CREATE INDEX IF NOT EXISTS idx_facturas_fecha ON facturas(fecha_emision);
 CREATE INDEX IF NOT EXISTS idx_pagos_fecha ON pagos(fecha);
 
+-- Adjuntos de la gestión de una factura (pago a proveedores / ingresos):
+-- documentos de respaldo aparte de la descripción libre. Mismo patrón que
+-- rendicion_adjuntos, pero colgando de facturas.
+CREATE TABLE IF NOT EXISTS factura_adjuntos (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    factura_id     INTEGER NOT NULL,
+    nombre_archivo TEXT NOT NULL,            -- nombre original
+    path           TEXT NOT NULL,            -- ruta local del archivo guardado
+    creado_en      TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (factura_id) REFERENCES facturas(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_factura_adj ON factura_adjuntos(factura_id);
+
 -- Módulo 4 · Rendiciones (gastos pagados por la empresa)
 CREATE TABLE IF NOT EXISTS rendiciones (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -402,6 +416,35 @@ def pagos_de_factura(conn: sqlite3.Connection, factura_id: int) -> list[sqlite3.
         "WHERE p.factura_id = ? ORDER BY p.fecha ASC, p.id ASC",
         (factura_id,),
     ).fetchall()
+
+
+def adjuntos_de_factura(conn: sqlite3.Connection, factura_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, nombre_archivo, path FROM factura_adjuntos "
+        "WHERE factura_id = ? ORDER BY id ASC",
+        (factura_id,),
+    ).fetchall()
+
+
+def agregar_adjunto_factura(conn: sqlite3.Connection, factura_id: int,
+                            nombre_archivo: str, path: str) -> None:
+    conn.execute(
+        "INSERT INTO factura_adjuntos (factura_id, nombre_archivo, path) VALUES (?, ?, ?)",
+        (factura_id, nombre_archivo, path),
+    )
+
+
+def adjunto_factura_por_id(conn: sqlite3.Connection, adj_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT id, factura_id, nombre_archivo, path FROM factura_adjuntos WHERE id = ?",
+        (adj_id,),
+    ).fetchone()
+
+
+def eliminar_adjunto_factura(conn: sqlite3.Connection, adj_id: int, factura_id: int) -> None:
+    conn.execute(
+        "DELETE FROM factura_adjuntos WHERE id = ? AND factura_id = ?", (adj_id, factura_id)
+    )
 
 
 def rendicion_asociada_a_factura(conn: sqlite3.Connection, factura_id: int) -> int | None:

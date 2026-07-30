@@ -103,6 +103,34 @@
       </form>
     </div>
 
+    <!-- Adjuntos de la gestión -->
+    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:20px;background:#0f0f0f">
+      <div class="eyebrow" style="margin-bottom:14px">Adjuntos</div>
+      {% if adjuntos %}
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+        {% for a in adjuntos %}
+        <div style="display:flex;align-items:center;gap:12px;border:1px solid #1c1c1c;border-radius:var(--radius);padding:9px 12px">
+          <span style="flex:1;font-size:13px">{{ a["nombre_archivo"] }}</span>
+          <a href="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/adjunto/{{ a['id'] }}/descargar"
+             style="font-family:var(--mono);font-size:11px;text-transform:uppercase;color:var(--green);font-weight:700">Descargar</a>
+          <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/adjunto/{{ a['id'] }}/eliminar" style="display:inline"
+                onsubmit="return confirm('¿Eliminar este adjunto?')">
+            <button type="submit" style="background:none;border:1px solid #2b2b2b;color:var(--slate);padding:4px 9px;border-radius:var(--radius);font-size:11px">Eliminar</button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="color:var(--slate);font-size:13px;margin-bottom:16px">Sin adjuntos.</p>
+      {% endif %}
+      <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/adjunto" enctype="multipart/form-data"
+            style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid #161616;padding-top:16px">
+        <input type="file" name="archivos" multiple required style="color:var(--mist);font-size:13px">
+        <button type="submit"
+          style="background:none;border:1px solid #2b2b2b;color:var(--snow);padding:8px 14px;border-radius:var(--radius);font-size:13px">+ Agregar archivo</button>
+      </form>
+    </div>
+
     <!-- Movimientos parciales -->
     <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;background:#0f0f0f">
       <div class="eyebrow" style="margin-bottom:14px">{{ cfg.accion|capitalize }}s parciales</div>

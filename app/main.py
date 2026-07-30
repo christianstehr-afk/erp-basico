@@ -38,6 +38,16 @@ DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-05-01")
 ADJUNTOS_DIR = Path(
     os.environ.get("ADJUNTOS_DIR", BASE_DIR.parent / "data" / "adjuntos" / "rendiciones")
 )
+# Carpeta donde se guardan los adjuntos de la gestión de una factura (pago a
+# proveedores / ingresos): documentos de respaldo aparte de la descripción.
+# Por defecto, HERMANA de ADJUNTOS_DIR (no una ruta fija aparte): así, en
+# producción, donde ADJUNTOS_DIR=/data/adjuntos/rendiciones (dentro del
+# volumen persistente de Railway), esto cae solo en /data/adjuntos/facturas
+# sin necesitar una variable de entorno nueva. Igual se puede sobreescribir
+# con ADJUNTOS_FACTURAS_DIR si hiciera falta.
+ADJUNTOS_FACTURAS_DIR = Path(
+    os.environ.get("ADJUNTOS_FACTURAS_DIR", ADJUNTOS_DIR.parent / "facturas")
+)
 
 app = FastAPI(title="ERP Básico · e-auto")
 app.add_middleware(
@@ -517,6 +527,7 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
             # Anulada por una NC: no hay nada que gestionar aquí.
             return RedirectResponse(f"/pagos/{seccion}", status_code=303)
         pagos = db.pagos_de_factura(conn, f["id"])
+        adjuntos = db.adjuntos_de_factura(conn, f["id"])
         rendiciones = []
         rend_asociada = None
         if seccion == "proveedores":
@@ -534,6 +545,7 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
         {
             "request": request, "rut": client.rut, "anio": ANIO,
             "seccion": seccion, "cfg": cfg, "f": f, "pagos": pagos,
+            "adjuntos": adjuntos,
             "hoy": date.today().isoformat(), "saldo": (f["total"] - f["pagado"]),
             "error": error, "rendiciones": rendiciones, "rend_asociada": rend_asociada,
         },
@@ -699,6 +711,54 @@ def _eliminar_movimiento(request: Request, seccion: str, codigo: str, pago_id: i
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
+async def _agregar_adjunto_factura(request: Request, seccion: str, codigo: str,
+                                   archivos: list[UploadFile]) -> Response:
+    if not _guard(request):
+        return RedirectResponse("/", status_code=303)
+    conn = db.get_conn()
+    try:
+        f = db.factura_pago_por_codigo(conn, codigo)
+        if f:
+            _guardar_adjuntos_factura(conn, f["id"], archivos)
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
+
+
+def _descargar_adjunto_factura(request: Request, seccion: str, codigo: str, adj_id: int) -> Response:
+    if not _guard(request):
+        return RedirectResponse("/", status_code=303)
+    conn = db.get_conn()
+    try:
+        f = db.factura_pago_por_codigo(conn, codigo)
+        adj = db.adjunto_factura_por_id(conn, adj_id)
+    finally:
+        conn.close()
+    if not f or not adj or adj["factura_id"] != f["id"] or not Path(adj["path"]).exists():
+        return Response("Adjunto no disponible", status_code=404)
+    return FileResponse(adj["path"], filename=adj["nombre_archivo"])
+
+
+def _eliminar_adjunto_factura(request: Request, seccion: str, codigo: str, adj_id: int) -> Response:
+    if not _guard(request):
+        return RedirectResponse("/", status_code=303)
+    conn = db.get_conn()
+    try:
+        f = db.factura_pago_por_codigo(conn, codigo)
+        adj = db.adjunto_factura_por_id(conn, adj_id)
+        if f and adj and adj["factura_id"] == f["id"]:
+            db.eliminar_adjunto_factura(conn, adj_id, f["id"])
+            conn.commit()
+            try:
+                Path(adj["path"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+    finally:
+        conn.close()
+    return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
+
+
 # ---- Pago a proveedores (facturas recibidas) ----
 
 @app.get("/pagos/proveedores", response_class=HTMLResponse)
@@ -739,6 +799,22 @@ def proveedores_agregar(request: Request, codigo: str,
 @app.post("/pagos/proveedores/{codigo}/pago/{pago_id}/eliminar")
 def proveedores_eliminar(request: Request, codigo: str, pago_id: int):
     return _eliminar_movimiento(request, "proveedores", codigo, pago_id)
+
+
+@app.post("/pagos/proveedores/{codigo}/adjunto")
+async def proveedores_agregar_adjunto(request: Request, codigo: str,
+                                      archivos: list[UploadFile] = File(default=[])):
+    return await _agregar_adjunto_factura(request, "proveedores", codigo, archivos)
+
+
+@app.get("/pagos/proveedores/{codigo}/adjunto/{adj_id}/descargar")
+def proveedores_descargar_adjunto(request: Request, codigo: str, adj_id: int):
+    return _descargar_adjunto_factura(request, "proveedores", codigo, adj_id)
+
+
+@app.post("/pagos/proveedores/{codigo}/adjunto/{adj_id}/eliminar")
+def proveedores_eliminar_adjunto(request: Request, codigo: str, adj_id: int):
+    return _eliminar_adjunto_factura(request, "proveedores", codigo, adj_id)
 
 
 # ---- Ingresos (facturas emitidas) ----
@@ -782,6 +858,22 @@ def ingresos_eliminar(request: Request, codigo: str, pago_id: int):
     return _eliminar_movimiento(request, "ingresos", codigo, pago_id)
 
 
+@app.post("/pagos/ingresos/{codigo}/adjunto")
+async def ingresos_agregar_adjunto(request: Request, codigo: str,
+                                   archivos: list[UploadFile] = File(default=[])):
+    return await _agregar_adjunto_factura(request, "ingresos", codigo, archivos)
+
+
+@app.get("/pagos/ingresos/{codigo}/adjunto/{adj_id}/descargar")
+def ingresos_descargar_adjunto(request: Request, codigo: str, adj_id: int):
+    return _descargar_adjunto_factura(request, "ingresos", codigo, adj_id)
+
+
+@app.post("/pagos/ingresos/{codigo}/adjunto/{adj_id}/eliminar")
+def ingresos_eliminar_adjunto(request: Request, codigo: str, adj_id: int):
+    return _eliminar_adjunto_factura(request, "ingresos", codigo, adj_id)
+
+
 # ---------------------------------------------------------------------------
 # Módulo 4 · Rendiciones (gastos pagados por la empresa)
 # ---------------------------------------------------------------------------
@@ -809,6 +901,26 @@ def _guardar_adjuntos(conn, rid: int, archivos: list[UploadFile]) -> None:
         with ruta.open("wb") as fh:
             shutil.copyfileobj(up.file, fh)
         db.agregar_adjunto(conn, rid, up.filename, str(ruta))
+
+
+def _guardar_adjuntos_factura(conn, factura_id: int, archivos: list[UploadFile]) -> None:
+    """Guarda en disco los adjuntos de la gestión de una factura (pago a
+    proveedores / ingresos) y los registra en la BD. Mismo patrón que
+    _guardar_adjuntos, colgando de facturas en vez de rendiciones."""
+    destino = ADJUNTOS_FACTURAS_DIR / str(factura_id)
+    for up in archivos or []:
+        if not up or not (up.filename or "").strip():
+            continue  # input de archivo vacío
+        destino.mkdir(parents=True, exist_ok=True)
+        seguro = _nombre_seguro(up.filename)
+        ruta = destino / seguro
+        i = 1
+        while ruta.exists():  # evita sobrescribir
+            ruta = destino / f"{ruta.stem}_{i}{ruta.suffix}"
+            i += 1
+        with ruta.open("wb") as fh:
+            shutil.copyfileobj(up.file, fh)
+        db.agregar_adjunto_factura(conn, factura_id, up.filename, str(ruta))
 
 
 def _render_rendicion(request: Request, client, rid: int,
