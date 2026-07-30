@@ -114,7 +114,7 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         if client_bhe is not None and rut_empresa:
             estado_sync["fase"] = "Consultando boletas de honorarios…"
             try:
-                boletas = sii_bhe.obtener_boletas_recibidas(client_bhe.session, rut_empresa, anio)
+                boletas = sii_bhe.obtener_boletas_recibidas(client_bhe.session, rut_empresa, anio, desde=desde)
                 if desde:
                     boletas = [b for b in boletas if (b.get("fecha") or "") >= desde]
                 for b in boletas:

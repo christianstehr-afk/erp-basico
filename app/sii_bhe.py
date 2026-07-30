@@ -10,13 +10,21 @@ requiere iniciar sesión con el RUT de la EMPRESA (no con el RUT personal que
 se usa para las facturas). Por eso vive en su propia sesión SII (ver
 SII_SESSIONS_BHE en main.py) y su propio módulo.
 
-IMPORTANTE — estado de este módulo: el parseo de las tablas de boletas está
-escrito de forma defensiva (heurísticas sobre RUT/fecha/montos, no nombres de
-columna fijos) porque no fue posible probarlo contra una sesión real del SII
-antes de desplegarlo (requiere credenciales de producción). Es muy probable
-que el primer sync real necesite un ajuste fino una vez que se vea el HTML
-real que devuelve el SII. Si falla, `obtener_boletas_recibidas` lanza
-BHEError con el detalle más específico posible para facilitar ese ajuste.
+IMPORTANTE — estado de este módulo (30-jul-2026): el informe anual construye
+el link a cada mes con JavaScript puro (document.write), no con <a href>
+planos, así que hubo que sacar el patrón real de la URL inspeccionando el
+HTML real (ver /debug/bhe/inspeccionar en main.py) en vez de heurísticas:
+
+  TMBCOC_InformeMensualBheRec.cgi?cbanoinformemensual=<año>
+    &cbmesinformemensual=<MM, 2 dígitos>&dv_arrastre=<dv>
+    &pagina_solicitada=<0,1,2,...>&rut_arrastre=<rut sin dv>
+
+Esa parte ya está confirmada contra el SII real. Lo que SIGUE sin probar
+contra datos reales es el parseo de las filas de boletas dentro de esa
+página mensual (`parse_mes`): está escrito de forma defensiva (heurísticas
+sobre RUT/fecha/montos, no nombres de columna fijos) porque aún no se vio el
+HTML real de esa página. Es muy probable que necesite un ajuste una vez que
+se vea (usar /debug/bhe/inspeccionar?url=<url de un mes con boletas>).
 """
 from __future__ import annotations
 
@@ -32,6 +40,7 @@ from .sii_client import normalizar_rut
 
 MENU_URL = "https://loa.sii.cl/cgi_IMT/TMBCOC_MenuConsultasContribRec.cgi"
 INFORME_ANUAL_URL = "https://loa.sii.cl/cgi_IMT/TMBCOC_InformeAnualBheRec.cgi"
+INFORME_MENSUAL_URL = "https://loa.sii.cl/cgi_IMT/TMBCOC_InformeMensualBheRec.cgi"
 
 MESES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -83,28 +92,20 @@ def _solo_digitos(texto: str) -> int:
     return int(n) if n else 0
 
 
-def _links_de_mes(html: str, base_url: str) -> list[str]:
-    """Busca en el informe anual los links a cada mes (detalle con boletas).
-
-    No conocemos el nombre exacto del .cgi de detalle mensual, así que se
-    toma cualquier link a un script bajo cgi_IMT que NO sea el informe anual
-    mismo (heurística: son los únicos otros links "de negocio" en esa
-    página, aparte de navegación general del portal SII).
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    vistos: set[str] = set()
-    links: list[str] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "cgi_IMT" not in href:
-            continue
-        if "InformeAnualBheRec" in href or "MenuConsultasContribRec" in href:
-            continue
-        abs_href = urljoin(base_url, href)
-        if abs_href not in vistos:
-            vistos.add(abs_href)
-            links.append(abs_href)
-    return links
+def _meses_a_revisar(anio: int, desde: str | None) -> range:
+    """Meses (1-12) del año a consultar, recortado por `desde` (YYYY-MM-DD)
+    cuando corresponde, para no pedir de más al SII."""
+    if not desde:
+        return range(1, 13)
+    try:
+        anio_desde, mes_desde = int(desde[:4]), int(desde[5:7])
+    except (ValueError, IndexError):
+        return range(1, 13)
+    if anio_desde > anio:
+        return range(0)  # nada que traer: el año pedido es anterior a `desde`
+    if anio_desde == anio:
+        return range(mes_desde, 13)
+    return range(1, 13)
 
 
 def _pdf_link_de_fila(tr, base_url: str) -> str | None:
@@ -208,13 +209,19 @@ def parse_mes(html: str, base_url: str, rut_empresa: str) -> list[dict]:
 
 
 def obtener_boletas_recibidas(
-    session: requests.Session, rut_empresa: str, anio: int
+    session: requests.Session, rut_empresa: str, anio: int, desde: str | None = None
 ) -> list[dict]:
     """Devuelve las boletas de honorarios recibidas por la empresa en `anio`.
 
-    Sigue el flujo: menú -> informe anual (elige año) -> cada mes -> parseo.
-    Lanza BHEError si el SII no responde como se espera (sesión vencida,
-    HTML irreconocible, etc.) — nunca una excepción cruda de requests/bs4.
+    Sigue el flujo: menú -> informe anual (valida la sesión) -> cada mes
+    desde `desde` (YYYY-MM-DD) en adelante, con paginación -> parseo. Lanza
+    BHEError si el SII no responde como se espera (sesión vencida, etc.) —
+    nunca una excepción cruda de requests/bs4.
+
+    La URL de cada mes se arma directamente (confirmada inspeccionando el
+    HTML real del SII, ver comentario al inicio del módulo) en vez de
+    scrapear el link: el informe anual lo arma con JavaScript puro
+    (document.write), no hay <a href> que buscar.
     """
     try:
         numero, dv = normalizar_rut(rut_empresa)
@@ -222,14 +229,16 @@ def obtener_boletas_recibidas(
         raise BHEError(f"RUT de empresa inválido: {exc}") from exc
 
     try:
-        # Paso 1: menú (deja la navegación "posicionada"; algunos sistemas
-        # legados del SII validan que se venga de ahí). Nunca bloquea: si
+        # Paso 1: menú (deja la navegación "posicionada"). Nunca bloquea: si
         # falla, se sigue igual al informe anual.
         session.get(MENU_URL, params={"dummy": int(time.time() * 1000)}, timeout=30)
     except requests.RequestException:
         pass
 
     try:
+        # Paso 2: informe anual. Ya no se usa para sacar links de mes (ver
+        # docstring), pero sirve para detectar sesión vencida ANTES de hacer
+        # hasta 12 x paginación de consultas mensuales de más.
         resp = session.get(
             INFORME_ANUAL_URL,
             params={"rut_arrastre": numero, "dv_arrastre": dv, "cbanoinformeanual": anio},
@@ -245,29 +254,37 @@ def obtener_boletas_recibidas(
             "para consultar boletas de honorarios."
         )
 
-    links_mes = _links_de_mes(html, resp.url)
-    if not links_mes:
-        raise BHEError(
-            "No se encontraron links a meses en el informe anual de boletas de honorarios. "
-            "Es posible que el SII haya cambiado el HTML de esa página (revisar sii_bhe.py)."
-        )
-
     boletas: list[dict] = []
     errores: list[str] = []
-    for href in links_mes:
-        try:
-            r = session.get(href, timeout=30)
+    alguna_pagina_ok = False
+    for mes in _meses_a_revisar(anio, desde):
+        pagina = 0
+        while pagina < 20:  # tope de seguridad ante una paginación anómala
+            params = {
+                "cbanoinformemensual": anio,
+                "cbmesinformemensual": f"{mes:02d}",
+                "dv_arrastre": dv,
+                "pagina_solicitada": pagina,
+                "rut_arrastre": numero,
+            }
+            try:
+                r = session.get(INFORME_MENSUAL_URL, params=params, timeout=30)
+            except requests.RequestException as exc:
+                errores.append(f"mes {mes:02d} pág {pagina}: {exc}")
+                break
             html_mes = r.content.decode("iso-8859-1", "replace")
             if _es_pagina_de_login(html_mes):
-                raise BHEError("Sesión perdida al abrir el detalle de un mes.")
-            boletas.extend(parse_mes(html_mes, r.url, rut_empresa))
-        except BHEError:
-            raise
-        except Exception as exc:
-            # Un mes que falla no debe tumbar los demás.
-            errores.append(f"{href}: {exc}")
+                raise BHEError(
+                    "La sesión con el SII (cuenta empresa) se perdió al consultar boletas de honorarios."
+                )
+            alguna_pagina_ok = True
+            filas = parse_mes(html_mes, r.url, rut_empresa)
+            if not filas:
+                break  # página sin boletas: no hay más para este mes
+            boletas.extend(filas)
+            pagina += 1
 
-    if not boletas and errores:
+    if not alguna_pagina_ok and errores:
         raise BHEError("No se pudo leer ningún mes: " + "; ".join(errores[:3]))
 
     return boletas
