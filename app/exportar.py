@@ -4,6 +4,8 @@ Módulo 5 · Generación de archivos para el export contable.
 - construir_excel: listado de movimientos (ingresos/egresos) a un .xlsx.
 - construir_zip_rendiciones: un PDF por rendición (información + adjuntos, una
   imagen por página) empaquetados en un .zip.
+- parsear_cartola_banco_chile / comparar_cc / construir_excel_comparacion:
+  comparación de la cartola del banco contra los movimientos de la app.
 
 Estas funciones no tocan la base de datos; reciben los datos ya consultados.
 """
@@ -546,4 +548,245 @@ def construir_zip_rendiciones(rendiciones: list[dict]) -> bytes:
                 nombre = f"{cod}_" + _nombre_archivo(r["nombre"], "_x.pdf")
             usados.add(nombre)
             zf.writestr(nombre, pdf)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Módulo 5 · Comparación con la cartola del banco
+# ---------------------------------------------------------------------------
+
+_FECHA_CARTOLA_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+
+
+def _monto_cartola(campo: str) -> int:
+    """Convierte un campo de monto de la cartola ('+0007000000', '00000000000')
+    a entero en pesos. El signo indica si el campo tiene valor, no si es
+    negativo (cargo/abono ya están en columnas separadas)."""
+    campo = (campo or "").strip()
+    if not campo:
+        return 0
+    digitos = campo[1:] if campo[0] in "+-" else campo
+    digitos = digitos.strip() or "0"
+    try:
+        return int(digitos)
+    except ValueError:
+        return 0
+
+
+def parsear_cartola_banco_chile(contenido: bytes) -> list[dict]:
+    """Parsea un .txt de cartola del Banco de Chile ('CartolaEmitida...txt').
+
+    Formato real (confirmado con un archivo de ejemplo): la primera línea trae
+    el nombre/RUT/cuenta, la segunda es el encabezado de columnas, y cada línea
+    de movimiento viene entre comillas con campos separados por ';':
+        Fecha;Detalle Movimiento;Cheque o Cargo;Deposito o Abono;Saldo;
+        Docto. Nro.;Trn;Caja;Sucursal
+    Los montos vienen como signo + dígitos con ceros a la izquierda, sin
+    decimales (pesos chilenos), p. ej. "+0007000000" = 7.000.000.
+
+    Devuelve una lista de dicts: fecha (YYYY-MM-DD), detalle, flujo
+    ('Ingreso' si hay abono, 'Egreso' si hay cargo), monto, canal. Las líneas
+    que no son movimientos (encabezados) se descartan.
+    """
+    texto = None
+    for enc in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            texto = contenido.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if texto is None:
+        texto = contenido.decode("utf-8", errors="replace")
+
+    movimientos: list[dict] = []
+    for linea in texto.splitlines():
+        linea = linea.strip()
+        if not linea:
+            continue
+        if linea.startswith('"') and linea.endswith('"'):
+            linea = linea[1:-1]
+        campos = linea.split(";")
+        if len(campos) < 4:
+            continue
+        fecha_raw = campos[0].strip()
+        if not _FECHA_CARTOLA_RE.match(fecha_raw):
+            continue  # descarta encabezados y cualquier línea que no sea un movimiento
+        detalle = campos[1].strip()
+        cargo = _monto_cartola(campos[2])
+        abono = _monto_cartola(campos[3]) if len(campos) > 3 else 0
+        canal = campos[8].strip() if len(campos) > 8 else ""
+        if abono > 0:
+            flujo, monto = "Ingreso", abono
+        elif cargo > 0:
+            flujo, monto = "Egreso", cargo
+        else:
+            continue
+        dd, mm, yyyy = fecha_raw.split("/")
+        movimientos.append({
+            "fecha": f"{yyyy}-{mm}-{dd}",
+            "detalle": detalle,
+            "flujo": flujo,
+            "monto": monto,
+            "canal": canal,
+        })
+    return movimientos
+
+
+def comparar_cc(movs_app: list[dict], movs_banco: list, tolerancia_dias: int = 3) -> dict:
+    """Compara los movimientos de la app (`movimientos_en_rango`) contra los de
+    la cartola del banco (`cc_banco_en_rango`).
+
+    Calce: mismo flujo (Ingreso/Egreso) y mismo monto exacto, con la fecha
+    dentro de una tolerancia de `tolerancia_dias` días (las transferencias a
+    veces se registran/abonan uno o dos días después). Es un calce voraz
+    (greedy): a cada movimiento de la app se le busca, entre los movimientos
+    de banco aún libres, el candidato válido con la fecha más cercana.
+
+    Devuelve {"calzados": [...], "solo_app": [...], "solo_banco": [...]}.
+    `calzados` trae pares {"app": <dict>, "banco": <dict>, "dif_dias": int}.
+    """
+    from datetime import date as _date
+
+    def _a_fecha(s: str) -> _date | None:
+        try:
+            return _date.fromisoformat(s)
+        except (ValueError, TypeError):
+            return None
+
+    banco_libres = []
+    for b in movs_banco:
+        banco_libres.append({
+            "fecha": b["fecha"], "detalle": b["detalle"],
+            "flujo": b["flujo"], "monto": b["monto"], "canal": b["canal"],
+        })
+
+    calzados = []
+    solo_app = []
+    for m in movs_app:
+        fecha_app = _a_fecha(m["fecha"])
+        candidatos = [
+            b for b in banco_libres
+            if b["flujo"] == m["flujo"] and b["monto"] == m["monto"]
+        ]
+        mejor = None
+        mejor_dif = None
+        for b in candidatos:
+            fecha_b = _a_fecha(b["fecha"])
+            if fecha_app is None or fecha_b is None:
+                dif = 0
+            else:
+                dif = abs((fecha_b - fecha_app).days)
+            if dif <= tolerancia_dias and (mejor_dif is None or dif < mejor_dif):
+                mejor, mejor_dif = b, dif
+        if mejor is not None:
+            banco_libres.remove(mejor)
+            calzados.append({"app": m, "banco": mejor, "dif_dias": mejor_dif})
+        else:
+            solo_app.append(m)
+
+    calzados.sort(key=lambda c: c["app"]["fecha"] or "")
+    solo_app.sort(key=lambda m: m["fecha"] or "")
+    banco_libres.sort(key=lambda b: b["fecha"] or "")
+    return {"calzados": calzados, "solo_app": solo_app, "solo_banco": banco_libres}
+
+
+def construir_excel_comparacion(comp: dict, desde: str, hasta: str) -> bytes:
+    """Arma el .xlsx de 'Exportar Comparación': tres hojas (Calzados, Solo
+    banco, Solo app) a partir del resultado de `comparar_cc`."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    verde = "FF009406"
+    tinta = "FF0A0A0A"
+    rojo = "FFC0392B"
+    ambar = "FFB8860B"
+
+    wb = Workbook()
+
+    def _titulo(ws, texto):
+        ws["A1"] = texto
+        ws["A1"].font = Font(name="Calibri", size=14, bold=True, color=tinta)
+        ws["A2"] = f"Rango: {desde} a {hasta}"
+        ws["A2"].font = Font(name="Calibri", size=10, color="FF666666")
+
+    def _encabezados(ws, textos, fila, color=tinta):
+        borde = Border(bottom=Side(style="thin", color="FFDDDDDD"))
+        for col, texto in enumerate(textos, start=1):
+            c = ws.cell(row=fila, column=col, value=texto)
+            c.font = Font(bold=True, color="FFFFFFFF")
+            c.fill = PatternFill("solid", fgColor=color)
+        return borde
+
+    # --- Hoja 1: Calzados ---
+    ws1 = wb.active
+    ws1.title = "Calzados"
+    _titulo(ws1, f"Movimientos calzados ({len(comp['calzados'])})")
+    encabezados1 = ["Fecha app", "Descripción app", "Flujo", "Monto",
+                     "Fecha banco", "Detalle banco", "Dif. días"]
+    borde = _encabezados(ws1, encabezados1, 4, verde)
+    fila = 5
+    for c in comp["calzados"]:
+        a, b = c["app"], c["banco"]
+        ws1.cell(row=fila, column=1, value=a["fecha"])
+        ws1.cell(row=fila, column=2, value=a["descripcion"])
+        cf = ws1.cell(row=fila, column=3, value=a["flujo"])
+        cf.font = Font(bold=True, color=verde if a["flujo"] == "Ingreso" else rojo)
+        cm = ws1.cell(row=fila, column=4, value=a["monto"])
+        cm.number_format = '"$"#,##0'
+        ws1.cell(row=fila, column=5, value=b["fecha"])
+        ws1.cell(row=fila, column=6, value=b["detalle"])
+        ws1.cell(row=fila, column=7, value=c["dif_dias"])
+        for col in range(1, 8):
+            ws1.cell(row=fila, column=col).border = borde
+        fila += 1
+    anchos1 = {1: 13, 2: 46, 3: 11, 4: 14, 5: 13, 6: 46, 7: 11}
+    for col, w in anchos1.items():
+        ws1.column_dimensions[get_column_letter(col)].width = w
+    ws1.freeze_panes = "A5"
+
+    # --- Hoja 2: Solo banco (no registrado en la app) ---
+    ws2 = wb.create_sheet("Solo banco")
+    _titulo(ws2, f"Movimientos solo en el banco, sin registrar en la app ({len(comp['solo_banco'])})")
+    borde = _encabezados(ws2, ["Fecha", "Detalle", "Flujo", "Monto", "Canal"], 4, ambar)
+    fila = 5
+    for b in comp["solo_banco"]:
+        ws2.cell(row=fila, column=1, value=b["fecha"])
+        ws2.cell(row=fila, column=2, value=b["detalle"])
+        cf = ws2.cell(row=fila, column=3, value=b["flujo"])
+        cf.font = Font(bold=True, color=verde if b["flujo"] == "Ingreso" else rojo)
+        cm = ws2.cell(row=fila, column=4, value=b["monto"])
+        cm.number_format = '"$"#,##0'
+        ws2.cell(row=fila, column=5, value=b["canal"])
+        for col in range(1, 6):
+            ws2.cell(row=fila, column=col).border = borde
+        fila += 1
+    anchos2 = {1: 13, 2: 46, 3: 11, 4: 14, 5: 12}
+    for col, w in anchos2.items():
+        ws2.column_dimensions[get_column_letter(col)].width = w
+    ws2.freeze_panes = "A5"
+
+    # --- Hoja 3: Solo app (no aparece en el banco) ---
+    ws3 = wb.create_sheet("Solo app")
+    _titulo(ws3, f"Movimientos solo en la app, sin aparecer en la cartola ({len(comp['solo_app'])})")
+    borde = _encabezados(ws3, ["Fecha", "Descripción", "Flujo", "Monto", "Origen"], 4, ambar)
+    fila = 5
+    for m in comp["solo_app"]:
+        ws3.cell(row=fila, column=1, value=m["fecha"])
+        ws3.cell(row=fila, column=2, value=m["descripcion"])
+        cf = ws3.cell(row=fila, column=3, value=m["flujo"])
+        cf.font = Font(bold=True, color=verde if m["flujo"] == "Ingreso" else rojo)
+        cm = ws3.cell(row=fila, column=4, value=m["monto"])
+        cm.number_format = '"$"#,##0'
+        ws3.cell(row=fila, column=5, value=m["origen"])
+        for col in range(1, 6):
+            ws3.cell(row=fila, column=col).border = borde
+        fila += 1
+    anchos3 = {1: 13, 2: 46, 3: 11, 4: 14, 5: 12}
+    for col, w in anchos3.items():
+        ws3.column_dimensions[get_column_letter(col)].width = w
+    ws3.freeze_panes = "A5"
+
+    buf = io.BytesIO()
+    wb.save(buf)
     return buf.getvalue()

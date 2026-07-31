@@ -1225,6 +1225,7 @@ def export_home(request: Request, desde: str = "", hasta: str = ""):
     conn = db.get_conn()
     try:
         movs = db.movimientos_en_rango(conn, d, h)
+        cc_resumen = db.cc_banco_resumen(conn)
     finally:
         conn.close()
     total_ing = sum(m["monto"] for m in movs if m["flujo"] == "Ingreso")
@@ -1236,6 +1237,7 @@ def export_home(request: Request, desde: str = "", hasta: str = ""):
             "desde": d, "hasta": h, "movs": movs,
             "total_ingresos": total_ing, "total_egresos": total_egr,
             "neto": total_ing - total_egr,
+            "cc_resumen": cc_resumen,
         },
     )
 
@@ -1287,6 +1289,57 @@ def export_rendiciones(request: Request, desde: str = "", hasta: str = ""):
     data = exportar.construir_zip_rendiciones(rends)
     headers = {"Content-Disposition": f'attachment; filename="rendiciones_{d}_a_{h}.zip"'}
     return Response(content=data, media_type="application/zip", headers=headers)
+
+
+@app.post("/export/cc/subir")
+async def export_cc_subir(request: Request, desde: str = Form(""), hasta: str = Form(""),
+                          archivo: UploadFile = File(...)):
+    """Sube la cartola del banco (.txt) y reemplaza la que hubiera guardada."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango(desde, hasta)
+    contenido = await archivo.read()
+    movimientos = exportar.parsear_cartola_banco_chile(contenido)
+    if not movimientos:
+        return RedirectResponse(
+            f"/export?desde={d}&hasta={h}&cc_error=1", status_code=303
+        )
+    conn = db.get_conn()
+    try:
+        db.reemplazar_cc_banco(conn, movimientos)
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(f"/export?desde={d}&hasta={h}&cc_ok=1", status_code=303)
+
+
+@app.get("/export/comparacion")
+def export_comparacion(request: Request, desde: str = "", hasta: str = ""):
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango(desde, hasta)
+    conn = db.get_conn()
+    try:
+        movs_app = db.movimientos_en_rango(conn, d, h)
+        movs_banco = db.cc_banco_en_rango(conn, d, h)
+    finally:
+        conn.close()
+    if not movs_banco:
+        return HTMLResponse(
+            "<p>No hay cartola del banco cargada para este rango. "
+            "Sube una con \"Agregar CC\" antes de exportar la comparación.</p>",
+            status_code=404,
+        )
+    comp = exportar.comparar_cc(movs_app, movs_banco)
+    data = exportar.construir_excel_comparacion(comp, d, h)
+    headers = {"Content-Disposition": f'attachment; filename="comparacion_cc_{d}_a_{h}.xlsx"'}
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 # ---------------------------------------------------------------------------

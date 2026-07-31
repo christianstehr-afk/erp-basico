@@ -157,6 +157,21 @@ CREATE TABLE IF NOT EXISTS rendicion_pagos (
 CREATE INDEX IF NOT EXISTS idx_rend_items ON rendicion_items(rendicion_id);
 CREATE INDEX IF NOT EXISTS idx_rend_adj ON rendicion_adjuntos(rendicion_id);
 CREATE INDEX IF NOT EXISTS idx_rend_pagos ON rendicion_pagos(rendicion_id);
+
+-- Módulo 5 · Cartola del banco (para comparar contra los movimientos de la app).
+-- Cada "Agregar CC" reemplaza por completo el contenido de esta tabla: solo se
+-- guarda la última cartola subida (no se acumula historial).
+CREATE TABLE IF NOT EXISTS cc_banco (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha      TEXT NOT NULL,                  -- YYYY-MM-DD
+    detalle    TEXT,                            -- texto de "Detalle Movimiento"
+    flujo      TEXT NOT NULL,                   -- 'Ingreso' (abono) | 'Egreso' (cargo)
+    monto      INTEGER NOT NULL,
+    canal      TEXT,                            -- INTERNET, CENTRAL, ...
+    creado_en  TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_cc_banco_fecha ON cc_banco(fecha);
 """
 
 
@@ -704,6 +719,40 @@ def rendiciones_con_pago_en_rango(conn: sqlite3.Connection, desde: str,
         """,
         (desde, hasta),
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Módulo 5 · Cartola del banco (comparación CC)
+# ---------------------------------------------------------------------------
+
+def reemplazar_cc_banco(conn: sqlite3.Connection, movimientos: list[dict]) -> int:
+    """Reemplaza por completo la cartola guardada por la nueva ('Agregar CC'
+    siempre sobrescribe la anterior). Devuelve la cantidad de filas insertadas."""
+    conn.execute("DELETE FROM cc_banco")
+    conn.executemany(
+        "INSERT INTO cc_banco (fecha, detalle, flujo, monto, canal) "
+        "VALUES (:fecha, :detalle, :flujo, :monto, :canal)",
+        movimientos,
+    )
+    return len(movimientos)
+
+
+def cc_banco_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM cc_banco WHERE fecha >= ? AND fecha <= ? ORDER BY fecha ASC, id ASC",
+        (desde, hasta),
+    ).fetchall()
+
+
+def cc_banco_resumen(conn: sqlite3.Connection) -> dict | None:
+    """Info de la cartola actualmente cargada (cantidad y rango de fechas), o
+    None si no hay ninguna cargada. Se usa para habilitar 'Exportar Comparación'."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n, MIN(fecha) AS min_fecha, MAX(fecha) AS max_fecha FROM cc_banco"
+    ).fetchone()
+    if not row or not row["n"]:
+        return None
+    return {"cantidad": row["n"], "desde": row["min_fecha"], "hasta": row["max_fecha"]}
 
 
 # ---------------------------------------------------------------------------

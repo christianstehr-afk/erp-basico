@@ -53,12 +53,43 @@
           style="background:var(--green);color:#fff;border:none;padding:11px 20px;border-radius:var(--radius);font-weight:700;font-size:13px">Ver movimientos</button>
       </form>
 
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:18px;border-top:1px solid #161616;padding-top:16px">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:18px;border-top:1px solid #161616;padding-top:16px">
         <a href="/export/excel?desde={{ desde }}&hasta={{ hasta }}"
            style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">↓ Exportar Excel</a>
         <a href="/export/rendiciones?desde={{ desde }}&hasta={{ hasta }}"
            style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">↓ Exportar Rendiciones (PDF)</a>
+
+        <form method="post" action="/export/cc/subir" enctype="multipart/form-data"
+              style="display:inline-flex;gap:8px;align-items:center">
+          <input type="hidden" name="desde" value="{{ desde }}">
+          <input type="hidden" name="hasta" value="{{ hasta }}">
+          <input type="file" name="archivo" accept=".txt" required
+                 style="color:var(--mist);font-size:12px;max-width:180px">
+          <button type="submit"
+            style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--snow);font-weight:700;background:none;cursor:pointer">↑ Agregar CC</button>
+        </form>
+
+        {% if cc_resumen %}
+        <a href="/export/comparacion?desde={{ desde }}&hasta={{ hasta }}"
+           style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">↓ Exportar Comparación</a>
+        {% else %}
+        <span title="Primero sube una cartola con &quot;Agregar CC&quot;"
+           style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #1c1c1c;border-radius:var(--radius);color:var(--slate);font-weight:700;cursor:not-allowed">↓ Exportar Comparación</span>
+        {% endif %}
       </div>
+
+      {% if cc_resumen %}
+      <p style="margin-top:12px;color:var(--slate);font-size:12px;font-family:var(--mono)">
+        Cartola cargada: {{ cc_resumen.cantidad }} movimiento{{ 's' if cc_resumen.cantidad != 1 else '' }},
+        del {{ cc_resumen.desde }} al {{ cc_resumen.hasta }}.
+      </p>
+      {% endif %}
+      {% if request.query_params.get('cc_ok') %}
+      <p style="margin-top:12px;color:var(--green);font-size:12px;font-family:var(--mono)">✓ Cartola cargada correctamente.</p>
+      {% endif %}
+      {% if request.query_params.get('cc_error') %}
+      <p style="margin-top:12px;color:#c0392b;font-size:12px;font-family:var(--mono)">No se encontraron movimientos en el archivo subido. Revisa que sea un .txt de cartola del Banco de Chile.</p>
+      {% endif %}
     </div>
 
     <!-- Resumen -->
