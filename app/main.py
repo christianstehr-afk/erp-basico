@@ -556,7 +556,8 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
 def _pdf_gestion(request: Request, seccion: str, codigo: str):
     """Devuelve el PDF del detalle de gestión de una factura (inline, para
     abrirlo en el navegador): resumen + movimientos parciales + el PDF
-    original de la factura (obtenido en vivo desde el SII) anexado al final."""
+    original de la factura (obtenido en vivo desde el SII) + los adjuntos de
+    la gestión, todo anexado al final."""
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
@@ -567,6 +568,7 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
         if not f:
             return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
         pagos = db.pagos_de_factura(conn, f["id"])
+        adjuntos = db.adjuntos_de_factura(conn, f["id"])
     finally:
         conn.close()
 
@@ -591,9 +593,15 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
             except SIISessionExpirada:
                 factura_bytes = None
 
-    data = exportar._pdf_de_gestion_pago(f, pagos, cfg, incluye_original=bool(factura_bytes))
+    data = exportar._pdf_de_gestion_pago(
+        f, pagos, cfg,
+        incluye_original=bool(factura_bytes),
+        incluye_adjuntos=bool(adjuntos),
+    )
     if factura_bytes:
         data = exportar.anexar_pdf(data, factura_bytes)
+    if adjuntos:
+        data = exportar.anexar_archivos(data, adjuntos)
     return Response(content=data, media_type="application/pdf")
 
 

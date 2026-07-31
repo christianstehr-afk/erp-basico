@@ -303,13 +303,16 @@ def _pdf_de_rendicion(r, items, adjuntos, pagos) -> bytes:
     return out.getvalue()
 
 
-def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False) -> bytes:
+def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False,
+                         incluye_adjuntos: bool = False) -> bytes:
     """Devuelve el PDF (bytes) del detalle de gestión de una factura (pago a
     proveedores / cobro a clientes): resumen + movimientos parciales.
 
     Si `incluye_original` es True, deja una nota indicando que el documento
     original de la factura viene a continuación (el llamador es quien anexa
-    esas páginas, con `anexar_pdf`, porque requiere una sesión SII activa)."""
+    esas páginas, con `anexar_pdf`, porque requiere una sesión SII activa).
+    Si `incluye_adjuntos` es True, deja una nota equivalente para los
+    adjuntos de la gestión (el llamador los anexa con `anexar_archivos`)."""
     import textwrap
 
     from reportlab.lib.pagesizes import A4
@@ -447,9 +450,60 @@ def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False) -> bytes
         c.setFillColorRGB(0.4, 0.4, 0.4)
         c.drawString(mx, y, "— Documento original de la factura a continuación —")
 
+    if incluye_adjuntos:
+        y -= 6 * mm
+        if y < 20 * mm:
+            c.showPage()
+            y = H - 22 * mm
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawString(mx, y, "— Adjuntos de la gestión a continuación —")
+
     c.showPage()
     c.save()
     return buf.getvalue()
+
+
+def anexar_archivos(base: bytes, adjuntos: list[dict]) -> bytes:
+    """Anexa al final de un PDF los archivos adjuntos de la gestión de una
+    factura (ver `factura_adjuntos` en db.py): imágenes se dibujan una por
+    página (con leyenda con el nombre del archivo), PDFs se agregan tal
+    cual. Un adjunto que no existe en disco o no se puede leer se salta sin
+    interrumpir a los demás — nunca debe tumbar la generación del PDF.
+    """
+    if not adjuntos:
+        return base
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    resultado = base
+
+    imagenes = [
+        a for a in adjuntos
+        if Path(a["nombre_archivo"] or "").suffix.lower() in IMG_EXT
+        and a["path"] and Path(a["path"]).exists()
+    ]
+    if imagenes:
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        for a in imagenes:
+            try:
+                _pagina_imagen(c, a["path"], a["nombre_archivo"])
+            except Exception:
+                pass  # una imagen que no se pudo dibujar no debe tumbar el resto
+        c.save()
+        resultado = anexar_pdf(resultado, buf.getvalue())
+
+    for a in adjuntos:
+        ext = Path(a["nombre_archivo"] or "").suffix.lower()
+        if ext == ".pdf" and a["path"] and Path(a["path"]).exists():
+            try:
+                resultado = anexar_pdf(resultado, Path(a["path"]).read_bytes())
+            except Exception:
+                pass  # un PDF adjunto ilegible no debe tumbar el resto
+
+    return resultado
 
 
 def anexar_pdf(base: bytes, extra: bytes | None) -> bytes:
