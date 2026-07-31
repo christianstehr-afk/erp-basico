@@ -71,31 +71,6 @@ def _solo_digitos(texto: str) -> int:
     return int(n) if n else 0
 
 
-# Frases que solo aparecen en la pantalla de acceso del SII (login), nunca en
-# las páginas ya autenticadas del sistema de facturación. Si el SII cierra la
-# sesión por inactividad, cualquier .cgi que debería devolver la lista de
-# documentos o un PDF devuelve esta pantalla en su lugar.
-#
-# Nota: esto es best-effort. No tenemos forma de probarlo contra una sesión
-# real vencida sin credenciales de producción, así que si el SII cambia esa
-# pantalla puede que haya que ajustar los marcadores.
-_MARCADORES_LOGIN = (
-    "clave tributaria",
-    "ingrese su rut y clave",
-    "sesion ha expirado",
-    "sesion no valida",
-    "sesion invalida",
-    "debe iniciar sesion",
-)
-
-
-def _es_pagina_de_login(html: str) -> bool:
-    """True si `html` es la pantalla de acceso del SII (sesión vencida)
-    en vez del contenido esperado (lista de documentos o PDF)."""
-    texto = _norm(html)
-    return any(m in texto for m in _MARCADORES_LOGIN)
-
-
 def _texto_propio(celda) -> str:
     """Texto de una celda EXCLUYENDO el contenido de celdas <td> anidadas.
 
@@ -206,21 +181,29 @@ def obtener_documentos(
     return docs
 
 
-def obtener_pdf_bytes(session: requests.Session, fuente: str, codigo: str) -> bytes | None:
+def obtener_pdf_bytes(session: requests.Session, fuente: str, codigo: str) -> bytes:
     """Descarga el PDF del documento y lo devuelve en memoria (sin guardarlo en disco).
 
     Se usa para servirlo al vuelo cuando el usuario lo pide (ver /pdf/{codigo}/ver
     en main.py), en vez de guardar una copia local como hacía `descargar_pdf`.
+
+    Con sesión válida y un código de documento existente, esta URL solo tiene
+    dos resultados posibles: el PDF, o una pantalla de login porque el SII
+    cerró la sesión. Antes se distinguía el segundo caso buscando frases
+    conocidas ("clave tributaria", "sesión ha expirado", etc.) en el HTML, pero
+    en producción el SII devolvió una variante de esa pantalla que no calzó
+    con ninguna frase reconocida: el usuario vio un error genérico ("Intenta
+    de nuevo") en vez del aviso de sesión perdida con el link para reingresar
+    su Clave Tributaria. Por eso ahora se trata cualquier respuesta que no sea
+    el PDF como sesión perdida, sin depender de reconocer el HTML exacto.
     """
     cfg = FUENTES[fuente]
     resp = session.get(cfg["pdf_url"], params={cfg["pdf_param"]: codigo}, timeout=60)
     if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
         return resp.content
-    if _es_pagina_de_login(resp.content.decode("iso-8859-1", "replace")):
-        raise SIISessionExpirada(
-            "La sesión con el SII se perdió (probablemente por inactividad)."
-        )
-    return None
+    raise SIISessionExpirada(
+        "La sesión con el SII se perdió (probablemente por inactividad)."
+    )
 
 
 # Notas de Crédito Electrónicas que dejan sin efecto una factura completa

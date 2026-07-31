@@ -401,6 +401,14 @@ def obtener_pdf_bytes(session: requests.Session, pdf_href: str) -> bytes | None:
     replicó en Python) y txt_descr_comuna (nombre de la comuna); todavía no
     está confirmado si el SII los exige o si basta con txt_codigobarras —
     esto es un intento best-effort, no una implementación verificada.
+
+    Devuelve None solo si no hay `pdf_href` o si falla la conexión (error de
+    red, no de sesión). Para cualquier otra respuesta que no sea el PDF se
+    asume sesión perdida (BHEError), sin depender de que _es_pagina_de_login
+    reconozca el HTML exacto: igual que en sii_docs.obtener_pdf_bytes, el SII
+    puede devolver una variante de esa pantalla que no calce con las frases
+    conocidas, y antes eso se traducía en un error genérico sin poder
+    reingresar la sesión.
     """
     if not pdf_href:
         return None
@@ -421,6 +429,4 @@ def obtener_pdf_bytes(session: requests.Session, pdf_href: str) -> bytes | None:
         return None
     if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
         return resp.content
-    if _es_pagina_de_login(resp.content.decode("iso-8859-1", "replace")):
-        raise BHEError("La sesión con el SII (cuenta empresa) se perdió al pedir el PDF de la boleta.")
-    return None
+    raise BHEError("La sesión con el SII (cuenta empresa) se perdió al pedir el PDF de la boleta.")
