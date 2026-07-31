@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -632,6 +633,51 @@ def parsear_cartola_banco_chile(contenido: bytes) -> list[dict]:
     return movimientos
 
 
+# Prefijos típicos del detalle de movimiento del banco que anteceden al
+# nombre de la contraparte real (se descartan para poder comparar nombres).
+_PREFIJOS_DETALLE_BANCO = (
+    "APP-TRASPASO A:", "APP-TRASPASO DE:", "TRASPASO A:", "TRASPASO DE:",
+)
+
+# Palabras muy comunes en razones sociales/detalles que no sirven para
+# distinguir una contraparte de otra (se ignoran al comparar nombres).
+_STOPWORDS_CONTRAPARTE = {
+    "spa", "sa", "ltda", "limitada", "eirl", "de", "del", "la", "el",
+    "los", "las", "y", "a",
+}
+
+
+def _normalizar_texto(s: str) -> str:
+    s = (s or "").lower()
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9\s]", " ", s)
+
+
+def _tokens_contraparte(s: str) -> set[str]:
+    return {
+        t for t in _normalizar_texto(s).split()
+        if len(t) > 2 and t not in _STOPWORDS_CONTRAPARTE
+    }
+
+
+def _contraparte_app(descripcion: str) -> str:
+    """La descripción de un movimiento de la app tiene forma
+    "Tipo de documento N° folio · Razón social" (ver movimientos_en_rango);
+    la contraparte es lo que va después del "·"."""
+    descripcion = descripcion or ""
+    if "·" in descripcion:
+        return descripcion.split("·")[-1].strip()
+    return descripcion
+
+
+def _contraparte_banco(detalle: str) -> str:
+    d = (detalle or "").strip()
+    for prefijo in _PREFIJOS_DETALLE_BANCO:
+        if d.upper().startswith(prefijo):
+            return d[len(prefijo):].strip()
+    return d
+
+
 def comparar_cc(movs_app: list[dict], movs_banco: list, tolerancia_dias: int = 3) -> dict:
     """Compara los movimientos de la app (`movimientos_en_rango`) contra los de
     la cartola del banco (`cc_banco_en_rango`).
@@ -640,10 +686,22 @@ def comparar_cc(movs_app: list[dict], movs_banco: list, tolerancia_dias: int = 3
     dentro de una tolerancia de `tolerancia_dias` días (las transferencias a
     veces se registran/abonan uno o dos días después). Es un calce voraz
     (greedy): a cada movimiento de la app se le busca, entre los movimientos
-    de banco aún libres, el candidato válido con la fecha más cercana.
+    de banco aún libres, el mejor candidato — priorizando primero los que
+    además comparten alguna palabra del nombre de la contraparte (evita
+    calces falsos cuando dos movimientos distintos comparten el mismo monto
+    por coincidencia) y, entre esos, la fecha más cercana.
+
+    Cada calce trae una "confianza":
+    - "alta": el nombre de la contraparte coincide (en la app y en el banco).
+    - "media": mismo monto y misma fecha exacta, pero no se pudo confirmar
+      el nombre (p. ej. pagos por un agregador que no menciona a quién).
+    - "revisar": mismo monto pero con fecha distinta Y sin coincidencia de
+      nombre — el calce es posible pero podría ser una coincidencia; conviene
+      confirmarlo a mano.
 
     Devuelve {"calzados": [...], "solo_app": [...], "solo_banco": [...]}.
-    `calzados` trae pares {"app": <dict>, "banco": <dict>, "dif_dias": int}.
+    `calzados` trae pares {"app": <dict>, "banco": <dict>, "dif_dias": int,
+    "confianza": str}.
     """
     from datetime import date as _date
 
@@ -664,23 +722,34 @@ def comparar_cc(movs_app: list[dict], movs_banco: list, tolerancia_dias: int = 3
     solo_app = []
     for m in movs_app:
         fecha_app = _a_fecha(m["fecha"])
+        tokens_app = _tokens_contraparte(_contraparte_app(m["descripcion"]))
         candidatos = [
             b for b in banco_libres
             if b["flujo"] == m["flujo"] and b["monto"] == m["monto"]
         ]
-        mejor = None
-        mejor_dif = None
+        evaluados = []
         for b in candidatos:
             fecha_b = _a_fecha(b["fecha"])
-            if fecha_app is None or fecha_b is None:
-                dif = 0
+            dif = 0 if fecha_app is None or fecha_b is None else abs((fecha_b - fecha_app).days)
+            if dif > tolerancia_dias:
+                continue
+            tokens_b = _tokens_contraparte(_contraparte_banco(b["detalle"]))
+            coincide_nombre = bool(tokens_app & tokens_b)
+            evaluados.append((b, dif, coincide_nombre))
+        # Prioriza: coincidencia de nombre primero, luego menor diferencia de días.
+        evaluados.sort(key=lambda t: (not t[2], t[1]))
+        if evaluados:
+            mejor, mejor_dif, coincide_nombre = evaluados[0]
+            if coincide_nombre:
+                confianza = "alta"
+            elif mejor_dif == 0:
+                confianza = "media"
             else:
-                dif = abs((fecha_b - fecha_app).days)
-            if dif <= tolerancia_dias and (mejor_dif is None or dif < mejor_dif):
-                mejor, mejor_dif = b, dif
-        if mejor is not None:
+                confianza = "revisar"
             banco_libres.remove(mejor)
-            calzados.append({"app": m, "banco": mejor, "dif_dias": mejor_dif})
+            calzados.append({
+                "app": m, "banco": mejor, "dif_dias": mejor_dif, "confianza": confianza,
+            })
         else:
             solo_app.append(m)
 
@@ -721,11 +790,17 @@ def construir_excel_comparacion(comp: dict, desde: str, hasta: str) -> bytes:
     # --- Hoja 1: Calzados ---
     ws1 = wb.active
     ws1.title = "Calzados"
-    _titulo(ws1, f"Movimientos calzados ({len(comp['calzados'])})")
+    n_revisar = sum(1 for c in comp["calzados"] if c["confianza"] == "revisar")
+    titulo1 = f"Movimientos calzados ({len(comp['calzados'])})"
+    if n_revisar:
+        titulo1 += f" · {n_revisar} para revisar"
+    _titulo(ws1, titulo1)
     encabezados1 = ["Fecha app", "Descripción app", "Flujo", "Monto",
-                     "Fecha banco", "Detalle banco", "Dif. días"]
+                     "Fecha banco", "Detalle banco", "Dif. días", "Confianza"]
     borde = _encabezados(ws1, encabezados1, 4, verde)
     fila = 5
+    etiqueta_confianza = {"alta": "Alta", "media": "Media", "revisar": "Revisar"}
+    relleno_revisar = PatternFill("solid", fgColor="FFFCE8B8")
     for c in comp["calzados"]:
         a, b = c["app"], c["banco"]
         ws1.cell(row=fila, column=1, value=a["fecha"])
@@ -737,10 +812,16 @@ def construir_excel_comparacion(comp: dict, desde: str, hasta: str) -> bytes:
         ws1.cell(row=fila, column=5, value=b["fecha"])
         ws1.cell(row=fila, column=6, value=b["detalle"])
         ws1.cell(row=fila, column=7, value=c["dif_dias"])
-        for col in range(1, 8):
-            ws1.cell(row=fila, column=col).border = borde
+        cc = ws1.cell(row=fila, column=8, value=etiqueta_confianza[c["confianza"]])
+        if c["confianza"] == "revisar":
+            cc.font = Font(bold=True, color=ambar)
+        for col in range(1, 9):
+            celda = ws1.cell(row=fila, column=col)
+            celda.border = borde
+            if c["confianza"] == "revisar":
+                celda.fill = relleno_revisar
         fila += 1
-    anchos1 = {1: 13, 2: 46, 3: 11, 4: 14, 5: 13, 6: 46, 7: 11}
+    anchos1 = {1: 13, 2: 46, 3: 11, 4: 14, 5: 13, 6: 46, 7: 11, 8: 12}
     for col, w in anchos1.items():
         ws1.column_dimensions[get_column_letter(col)].width = w
     ws1.freeze_panes = "A5"
