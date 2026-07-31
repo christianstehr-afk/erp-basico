@@ -295,6 +295,27 @@
   </main>
 
   <script>
+  // Chequeo de sesión SII al cargar el Cockpit: antes solo se notaba la
+  // sesión perdida al sincronizar o pedir un PDF, y mientras tanto el panel
+  // seguía mostrando datos viejos como si la conexión estuviera bien.
+  (function(){
+    fetch('/sii/estado').then(function(r){return r.json();}).then(function(st){
+      if(st.conectado) return;
+      var overlay=document.createElement('div');
+      overlay.style.cssText='position:fixed;inset:0;background:#0f0f0f;color:#eee;'
+        +'display:flex;flex-direction:column;align-items:center;justify-content:center;'
+        +'gap:16px;text-align:center;padding:24px;z-index:9999;font-family:Arial,sans-serif';
+      overlay.innerHTML='<p style="max-width:420px">Se perdió la sesión con el SII '
+        +'(probablemente por inactividad prolongada). Reingresando…</p>';
+      document.body.appendChild(overlay);
+      setTimeout(function(){
+        location.href='/?relogin=1&rut='+encodeURIComponent(st.rut||'');
+      }, 1200);
+    }).catch(function(){/* si falla el chequeo (red, etc.) no se interrumpe la vista */});
+  })();
+  </script>
+
+  <script>
     document.querySelectorAll("table.cockpit-table").forEach(function (tabla) {
       var tbody = tabla.tBodies[0];
       if (!tbody) return;

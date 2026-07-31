@@ -219,6 +219,41 @@ def sync_estado(request: Request):
     return JSONResponse(sync.estado_sync)
 
 
+@app.get("/sii/estado")
+def sii_estado(request: Request):
+    """Chequeo liviano y en vivo de la sesión con el SII, para el Cockpit.
+
+    Antes la sesión perdida solo se notaba cuando corría una sincronización
+    o al pedir un PDF puntual: si la sesión moría entre medio, el Cockpit se
+    quedaba mostrando datos viejos como si todo siguiera bien hasta que el
+    usuario disparara alguna de esas dos acciones. El JS de dashboard.html
+    llama a este endpoint apenas carga la página para detectarlo altiro.
+
+    Pide la primera página de "recibidos" (una sola llamada al SII, no todo
+    el sync) y reutiliza la misma señal ya validada en
+    sii_docs.obtener_documentos: esta empresa siempre tiene documentos ese
+    año, así que ninguna fila reconocida en la primera página es sesión
+    perdida (no falta de documentos). Es la misma lógica que ya se usa para
+    la sincronización completa, no la detección por frases de texto que
+    resultó frágil en la descarga de PDF individual (ver conversación
+    2026-07-31).
+    """
+    client = _current_client(request)
+    if not client or not client.rut:
+        return JSONResponse({"conectado": False, "rut": ""})
+    try:
+        sii_docs.obtener_documentos(client.session, "recibidos", anio=ANIO, max_paginas=1)
+    except SIISessionExpirada:
+        rut = client.rut
+        _invalidar_sesion(request)
+        return JSONResponse({"conectado": False, "rut": rut})
+    except Exception:
+        # Error de red u otro problema no relacionado a la sesión: no se
+        # interrumpe al usuario con un aviso de sesión perdida que sería falso.
+        return JSONResponse({"conectado": True, "rut": client.rut})
+    return JSONResponse({"conectado": True, "rut": client.rut})
+
+
 @app.get("/debug/bhe/inspeccionar", response_class=PlainTextResponse)
 def debug_bhe_inspeccionar(request: Request, anio: int = ANIO, url: str = ""):
     """Herramienta temporal de diagnóstico: usa la sesión empresa real (ya
