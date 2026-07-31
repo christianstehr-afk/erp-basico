@@ -59,7 +59,7 @@
         </thead>
         <tbody>
           {% for f in filas %}
-          {% set pagada = f["pagado"] >= f["total"] and f["total"] > 0 %}
+          {% set pagada = f["pagado"] >= f["total"] %}
           {% set color = 'var(--green)' if pagada else '#3b82f6' %}
           <tr style="border-top:1px solid #161616">
             <td style="padding:11px 14px">{{ f["documento"] }}</td>

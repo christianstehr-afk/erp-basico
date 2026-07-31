@@ -66,7 +66,7 @@
           {% for f in filas %}
           {% set rechazada = f["fecha_reclamo"] %}
           {% set anulada = f["anulada_por"] %}
-          {% set pagada = f["pagado"] >= f["total"] and f["total"] > 0 %}
+          {% set pagada = f["pagado"] >= f["total"] %}
           {% set color = 'var(--red)' if rechazada else ('var(--green)' if (pagada or anulada) else '#3b82f6') %}
           {% set orden_estado = -1 if rechazada else (3 if anulada else (2 if pagada else 1)) %}
           <tr style="border-top:1px solid #161616{% if rechazada %};color:var(--red){% endif %}">

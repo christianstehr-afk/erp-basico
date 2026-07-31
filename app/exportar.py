@@ -346,7 +346,7 @@ def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False,
     total = f["total"] or 0
     pagado = f["pagado"] or 0
     saldo = total - pagado
-    pagada = pagado >= total and total > 0
+    pagada = pagado >= total
     estado = "Rechazada" if rechazada else (cfg["estado_ok"] if pagada else "Pendiente")
 
     c.setFillColorRGB(0, 0.58, 0.023)  # verde e-auto

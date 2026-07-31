@@ -29,7 +29,7 @@
   </header>
 
   {% set rechazada = f["fecha_reclamo"] %}
-  {% set pagada = f["pagado"] >= f["total"] and f["total"] > 0 %}
+  {% set pagada = f["pagado"] >= f["total"] %}
   {% set color = 'var(--red)' if rechazada else ('var(--green)' if pagada else '#3b82f6') %}
   {% set saldo = f["total"] - f["pagado"] %}
 
