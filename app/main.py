@@ -1326,6 +1326,11 @@ def export_comparacion(request: Request, desde: str = "", hasta: str = ""):
         movs_banco = db.cc_banco_en_rango(conn, d, h)
     finally:
         conn.close()
+    # Filtro defensivo adicional (además del WHERE en SQL): garantiza que la
+    # comparación respete estrictamente el rango elegido, sin importar el
+    # formato de fecha que traiga cada fila.
+    movs_app = [m for m in movs_app if d <= (m["fecha"] or "") <= h]
+    movs_banco = [b for b in movs_banco if d <= (b["fecha"] or "") <= h]
     if not movs_banco:
         return HTMLResponse(
             "<p>No hay cartola del banco cargada para este rango. "

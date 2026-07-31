@@ -41,12 +41,12 @@
             style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
         <div>
           <label style="display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px">Desde</label>
-          <input type="date" name="desde" value="{{ desde }}" required
+          <input type="date" name="desde" id="rango-desde" value="{{ desde }}" required
                  style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)">
         </div>
         <div>
           <label style="display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px">Hasta</label>
-          <input type="date" name="hasta" value="{{ hasta }}" required
+          <input type="date" name="hasta" id="rango-hasta" value="{{ hasta }}" required
                  style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)">
         </div>
         <button type="submit"
@@ -54,15 +54,15 @@
       </form>
 
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:18px;border-top:1px solid #161616;padding-top:16px">
-        <a href="/export/excel?desde={{ desde }}&hasta={{ hasta }}"
+        <a href="/export/excel?desde={{ desde }}&hasta={{ hasta }}" class="export-link" data-base="/export/excel"
            style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">↓ Exportar Excel</a>
-        <a href="/export/rendiciones?desde={{ desde }}&hasta={{ hasta }}"
+        <a href="/export/rendiciones?desde={{ desde }}&hasta={{ hasta }}" class="export-link" data-base="/export/rendiciones"
            style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">↓ Exportar Rendiciones (PDF)</a>
 
         <form method="post" action="/export/cc/subir" enctype="multipart/form-data"
               style="display:inline-flex;gap:8px;align-items:center">
-          <input type="hidden" name="desde" value="{{ desde }}">
-          <input type="hidden" name="hasta" value="{{ hasta }}">
+          <input type="hidden" name="desde" id="cc-desde" value="{{ desde }}">
+          <input type="hidden" name="hasta" id="cc-hasta" value="{{ hasta }}">
           <input type="file" name="archivo" accept=".txt" required
                  style="color:var(--mist);font-size:12px;max-width:180px">
           <button type="submit"
@@ -70,13 +70,16 @@
         </form>
 
         {% if cc_resumen %}
-        <a href="/export/comparacion?desde={{ desde }}&hasta={{ hasta }}"
+        <a href="/export/comparacion?desde={{ desde }}&hasta={{ hasta }}" class="export-link" data-base="/export/comparacion"
            style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">↓ Exportar Comparación</a>
         {% else %}
         <span title="Primero sube una cartola con &quot;Agregar CC&quot;"
            style="display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:9px 16px;border:1px solid #1c1c1c;border-radius:var(--radius);color:var(--slate);font-weight:700;cursor:not-allowed">↓ Exportar Comparación</span>
         {% endif %}
       </div>
+      <p style="margin-top:10px;color:var(--slate);font-size:11px;font-family:var(--mono)">
+        Los botones de exportación usan siempre el rango Desde/Hasta que esté escrito arriba, aunque no hayas presionado "Ver movimientos".
+      </p>
 
       {% if cc_resumen %}
       <p style="margin-top:12px;color:var(--slate);font-size:12px;font-family:var(--mono)">
@@ -147,6 +150,31 @@
   </main>
 
   <script>
+    (function () {
+      // Mantiene los enlaces de exportación (Excel, Rendiciones, Comparación) y
+      // el formulario de "Agregar CC" sincronizados con el rango Desde/Hasta
+      // realmente escrito en pantalla, aunque no se haya presionado
+      // "Ver movimientos" todavía (evita exportar con un rango desactualizado).
+      var desdeInput = document.getElementById("rango-desde");
+      var hastaInput = document.getElementById("rango-hasta");
+      if (desdeInput && hastaInput) {
+        var sincronizar = function () {
+          var d = desdeInput.value, h = hastaInput.value;
+          document.querySelectorAll("a.export-link").forEach(function (a) {
+            var base = a.getAttribute("data-base");
+            a.href = base + "?desde=" + encodeURIComponent(d) + "&hasta=" + encodeURIComponent(h);
+          });
+          var ccDesde = document.getElementById("cc-desde");
+          var ccHasta = document.getElementById("cc-hasta");
+          if (ccDesde) ccDesde.value = d;
+          if (ccHasta) ccHasta.value = h;
+        };
+        desdeInput.addEventListener("input", sincronizar);
+        hastaInput.addEventListener("input", sincronizar);
+        sincronizar();
+      }
+    })();
+
     (function () {
       var tabla = document.getElementById("tabla-mov");
       if (!tabla) return;
