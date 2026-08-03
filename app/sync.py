@@ -87,10 +87,17 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
                 pass  # si el RCV no responde, seguimos sin marcar rechazos
 
         # Notas de crédito de anulación: revisa el PDF de cada NC emitida aún no
-        # procesada en busca de "ANULA DOCUMENTO DE LA REFERENCIA..." y, si la
-        # encuentra, marca como ANULADA la factura que referencia (folio +
-        # contraparte). Solo se descarga el PDF una vez por NC (ver
-        # ref_procesada); si la descarga falla se reintenta en el próximo sync.
+        # procesada en busca de "ANULA DOCUMENTO..." y, si la encuentra, marca
+        # como ANULADA la factura que referencia (folio + contraparte).
+        # ref_procesada solo se pone en 1 cuando ya sabemos que no hay nada más
+        # que hacer con esta NC: no encontró referencia de anulación en el PDF,
+        # o sí la encontró y logró marcar la factura. Si encontró un folio_ref
+        # pero marcar_anulada no pudo (p. ej. la factura referenciada todavía
+        # no estaba sincronizada ese día, o hubo ambigüedad), NO se marca
+        # procesada: se reintenta en el próximo sync en vez de quedar
+        # silenciosamente sin marcar para siempre (bug reportado 2026-08-03:
+        # una NC con referencia de anulación real no dejó su factura marcada
+        # y no había forma de detectarlo sin mirar la BD a mano).
         pendientes_nc = db.notas_credito_sin_procesar(conn)
         if pendientes_nc:
             estado_sync["fase"] = "Revisando notas de crédito…"
@@ -100,11 +107,15 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
                 except Exception:
                     pdf_bytes = None
                 if not pdf_bytes:
-                    continue
+                    continue  # falla de descarga: reintenta en el próximo sync
                 folio_ref = sii_docs.folio_anulado_en_nc(pdf_bytes)
-                if folio_ref:
-                    db.marcar_anulada(conn, folio_ref, nc["rut_contraparte"], nc["codigo_sii"])
-                db.marcar_referencia_procesada(conn, nc["codigo_sii"])
+                if not folio_ref:
+                    db.marcar_referencia_procesada(conn, nc["codigo_sii"])
+                    continue
+                if db.marcar_anulada(conn, folio_ref, nc["rut_contraparte"], nc["codigo_sii"]):
+                    db.marcar_referencia_procesada(conn, nc["codigo_sii"])
+                # si no logró marcarla, se deja ref_procesada en 0 a propósito
+                # para reintentar en el próximo sync
             conn.commit()
 
         # Boletas de honorarios recibidas (BHE): requiere la sesión "empresa"

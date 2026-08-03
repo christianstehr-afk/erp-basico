@@ -32,7 +32,7 @@ EMPRESA_RUT = os.environ.get("EMPRESA_RUT", "77708215-9")
 ANIO = int(os.environ.get("ANIO", "2026"))
 # Inicio en producción del ERP: solo se sincronizan documentos desde esta
 # fecha (junio 2026) en adelante.
-DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-03-01")
+DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-01-01")
 
 # Carpeta donde se guardan los adjuntos de rendiciones (boletas/facturas).
 ADJUNTOS_DIR = Path(

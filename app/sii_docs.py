@@ -219,13 +219,16 @@ def obtener_pdf_bytes(session: requests.Session, fuente: str, codigo: str) -> by
 
 
 # Notas de Crédito Electrónicas que dejan sin efecto una factura completa
-# incluyen en su PDF una línea de referencia como:
+# incluyen en su PDF una línea de referencia. El texto exacto lo arma el
+# software de facturación de cada emisor (no es un formato único del SII), así
+# que varía; confirmado en producción, entre otras:
 #   "ANULA DOCUMENTO DE LA REFERENCIA- Fact.Electronica N° 124 del 2026-07-27"
-# El texto exacto del tipo de documento varía; lo único estable es la frase
-# "ANULA DOCUMENTO DE LA REFERENCIA" seguida, en algún punto cercano, del
-# folio tras "N°"/"Nº".
+#   "ANULA DOCUMENTO DE LA REFERENCIA- Fact.Electronica N° 89 del 2026-02-16"
+# "DE LA REFERENCIA" es opcional a propósito (no todo software la incluye) —
+# lo único que se exige es "ANULA DOCUMENTO" seguido, en algún punto cercano,
+# del folio tras "N°"/"Nº"/"No".
 ANULA_REF_RE = re.compile(
-    r"ANULA\s+DOCUMENTO\s+DE\s+LA\s+REFERENCIA[\s\S]{0,80}?N[°ºo]\s*(\d+)",
+    r"ANULA\s+DOCUMENTO(?:\s+DE\s+LA\s+REFERENCIA)?[\s\S]{0,80}?N[°ºo]\.?\s*(\d+)",
     re.IGNORECASE,
 )
 
