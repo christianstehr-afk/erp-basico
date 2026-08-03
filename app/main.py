@@ -170,24 +170,29 @@ def login(request: Request, rut: str = Form(...), clave: str = Form(...),
             status_code=401,
         )
 
+    # Segundo login, con la cuenta "empresa" (usado para boletas de
+    # honorarios, ver sii_bhe.py). A pedido de Christian (2026-08-03, riesgo
+    # de seguridad): AMBOS logins deben ser válidos para entrar al Cockpit —
+    # antes este segundo login podía fallar sin bloquear el acceso, lo que
+    # permitía entrar con la cuenta empresa vacía/incorrecta. Si falla, se
+    # descarta también el login personal recién hecho: no se crea sid ni
+    # sesión, y se vuelve al formulario con error (no se llega al Cockpit).
+    client_bhe = SIIClient()
+    try:
+        client_bhe.login(rut_empresa, clave_empresa)
+    except SIIAuthError as exc:
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": str(exc), "rut_prefill": rut,
+             "rut_empresa_prefill": rut_empresa},
+            status_code=401,
+        )
+
     sid = secrets.token_urlsafe(24)
     SII_SESSIONS[sid] = client
+    SII_SESSIONS_BHE[sid] = client_bhe
     request.session["sid"] = sid
-
-    # Segundo login, con la cuenta "empresa" — solo para boletas de
-    # honorarios recibidas (ver sii_bhe.py). A propósito NO bloquea el acceso
-    # a la app si falla: la persona igual puede entrar y usar el resto del
-    # ERP; el aviso queda en el panel (sync.estado_sync["boletas_error"]).
-    client_bhe: SIIClient | None = None
-    try:
-        client_bhe = SIIClient()
-        client_bhe.login(rut_empresa, clave_empresa)
-        SII_SESSIONS_BHE[sid] = client_bhe
-    except SIIAuthError as exc:
-        client_bhe = None
-        sync.estado_sync["boletas_error"] = (
-            f"No se pudo iniciar sesión con la cuenta empresa (boletas de honorarios): {exc}"
-        )
+    sync.estado_sync["boletas_error"] = None
 
     # Dispara la sincronización en segundo plano (no bloquea el login): el
     # cockpit, al cargar, ve `sync.corriendo=True` y muestra su barra de
