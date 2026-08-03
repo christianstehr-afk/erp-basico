@@ -49,6 +49,12 @@ ADJUNTOS_FACTURAS_DIR = Path(
     os.environ.get("ADJUNTOS_FACTURAS_DIR", ADJUNTOS_DIR.parent / "facturas")
 )
 
+# Carpeta donde queda guardada cada copia del Excel de log descargado desde el
+# Cockpit (además de servirse como descarga en el navegador). Vive dentro del
+# proyecto (Dropbox): son archivos estáticos, sin el riesgo que sí tiene la BD
+# viva ahí (ver comentario de DB_PATH en db.py).
+LOG_DIR = Path(os.environ.get("LOG_DIR", BASE_DIR.parent / "Log"))
+
 app = FastAPI(title="ERP Básico · e-auto")
 app.add_middleware(
     SessionMiddleware,
@@ -93,6 +99,20 @@ def _invalidar_sesion(request: Request) -> None:
     if sid:
         SII_SESSIONS.pop(sid, None)
         SII_SESSIONS_BHE.pop(sid, None)
+
+
+def _log_evento(request: Request, accion: str) -> None:
+    """Registra una operación en el LOG de auditoría (fecha, hora, acción y
+    usuario), para poder reconstruir qué pasó si algo se borra por error (ver
+    /log/excel y el botón "Descargar LOG" del Cockpit). Usa su propia conexión
+    corta, aparte de la de la operación que se está registrando."""
+    client = _current_client(request)
+    conn = db.get_conn()
+    try:
+        db.registrar_log(conn, accion, usuario=(client.rut if client else None))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 _MSG_SESION_PERDIDA = (
@@ -193,6 +213,7 @@ def login(request: Request, rut: str = Form(...), clave: str = Form(...),
     SII_SESSIONS_BHE[sid] = client_bhe
     request.session["sid"] = sid
     sync.estado_sync["boletas_error"] = None
+    _log_evento(request, "Inicio de sesión")
 
     # Dispara la sincronización en segundo plano (no bloquea el login): el
     # cockpit, al cargar, ve `sync.corriendo=True` y muestra su barra de
@@ -208,6 +229,7 @@ def sincronizar_ahora(request: Request):
     client = _current_client(request)
     if not client or not client.rut:
         return JSONResponse({"ok": False, "error": "no-session"}, status_code=401)
+    _log_evento(request, "Sincronización manual con el SII")
     client_bhe = _current_client_bhe(request)
     sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC,
                            client_bhe=client_bhe, rut_empresa=client_bhe.rut if client_bhe else None)
@@ -353,6 +375,34 @@ def respaldo_db(request: Request):
     nombre = f"RespaldoERP_{date.today():%Y%m%d}.db"
     return Response(
         content=data, media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
+@app.get("/log/excel")
+def log_excel(request: Request):
+    """Descarga un Excel con el historial completo del LOG de auditoría
+    (botón "Descargar LOG" del Cockpit). Además de servirse como descarga,
+    deja una copia guardada en la carpeta Log del proyecto (Dropbox), con
+    nombre LogERP_AAAAMMDD.xlsx (se sobrescribe si ya se descargó hoy)."""
+    client = _current_client(request)
+    if not client or not client.rut:
+        return RedirectResponse("/", status_code=303)
+    conn = db.get_conn()
+    try:
+        logs = db.listar_logs(conn)
+    finally:
+        conn.close()
+    data = exportar.construir_excel_logs(logs)
+    nombre = f"LogERP_{date.today():%Y%m%d}.xlsx"
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        (LOG_DIR / nombre).write_bytes(data)
+    except OSError:
+        pass  # si no se pudo guardar en la carpeta del proyecto, igual se entrega la descarga
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
     )
 
@@ -664,6 +714,7 @@ def _guardar_fecha_tope(request: Request, seccion: str, codigo: str, fecha_tope:
         conn.commit()
     finally:
         conn.close()
+    _log_evento(request, f"Fecha tope actualizada · {seccion} {codigo} → {fecha_tope.strip()}")
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
@@ -677,6 +728,7 @@ def _guardar_descripcion(request: Request, seccion: str, codigo: str, descripcio
         conn.commit()
     finally:
         conn.close()
+    _log_evento(request, f"Descripción actualizada · {seccion} {codigo}")
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
@@ -752,6 +804,7 @@ def _agregar_movimiento(request: Request, seccion: str, codigo: str,
         conn.commit()
     finally:
         conn.close()
+    _log_evento(request, f"Pago registrado · {seccion} {codigo} · ${monto_int} el {fecha}")
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
@@ -759,13 +812,17 @@ def _eliminar_movimiento(request: Request, seccion: str, codigo: str, pago_id: i
     if not _guard(request):
         return RedirectResponse("/", status_code=303)
     conn = db.get_conn()
+    borrado = False
     try:
         f = db.factura_pago_por_codigo(conn, codigo)
         if f:
             db.eliminar_pago(conn, pago_id, f["id"])
             conn.commit()
+            borrado = True
     finally:
         conn.close()
+    if borrado:
+        _log_evento(request, f"Pago eliminado · {seccion} {codigo} · pago id {pago_id}")
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
@@ -774,13 +831,17 @@ async def _agregar_adjunto_factura(request: Request, seccion: str, codigo: str,
     if not _guard(request):
         return RedirectResponse("/", status_code=303)
     conn = db.get_conn()
+    agregado = False
     try:
         f = db.factura_pago_por_codigo(conn, codigo)
         if f:
             _guardar_adjuntos_factura(conn, f["id"], archivos)
             conn.commit()
+            agregado = True
     finally:
         conn.close()
+    if agregado:
+        _log_evento(request, f"Adjunto agregado · {seccion} {codigo}")
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
@@ -802,18 +863,22 @@ def _eliminar_adjunto_factura(request: Request, seccion: str, codigo: str, adj_i
     if not _guard(request):
         return RedirectResponse("/", status_code=303)
     conn = db.get_conn()
+    eliminado = False
     try:
         f = db.factura_pago_por_codigo(conn, codigo)
         adj = db.adjunto_factura_por_id(conn, adj_id)
         if f and adj and adj["factura_id"] == f["id"]:
             db.eliminar_adjunto_factura(conn, adj_id, f["id"])
             conn.commit()
+            eliminado = True
             try:
                 Path(adj["path"]).unlink(missing_ok=True)
             except OSError:
                 pass
     finally:
         conn.close()
+    if eliminado:
+        _log_evento(request, f"Adjunto eliminado · {seccion} {codigo} · adjunto id {adj_id}")
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
@@ -1089,6 +1154,7 @@ async def rendicion_nueva_crear(
         conn.commit()
     finally:
         conn.close()
+    _log_evento(request, f"Rendición creada · {nombre} (id {rid})")
     return RedirectResponse(f"/pagos/rendiciones/{rid}", status_code=303)
 
 
@@ -1157,6 +1223,7 @@ def rendicion_agregar_pago(request: Request, rid: int,
         conn.commit()
     finally:
         conn.close()
+    _log_evento(request, f"Pago registrado en rendición {rid} · ${monto_int} el {fecha}")
     return RedirectResponse(f"/pagos/rendiciones/{rid}", status_code=303)
 
 
@@ -1170,6 +1237,7 @@ def rendicion_eliminar_pago(request: Request, rid: int, pago_id: int):
         conn.commit()
     finally:
         conn.close()
+    _log_evento(request, f"Pago eliminado de rendición {rid} · pago id {pago_id}")
     return RedirectResponse(f"/pagos/rendiciones/{rid}", status_code=303)
 
 
@@ -1180,12 +1248,16 @@ async def rendicion_agregar_adjunto(request: Request, rid: int,
     if not client:
         return RedirectResponse("/", status_code=303)
     conn = db.get_conn()
+    agregado = False
     try:
         if db.rendicion_por_id(conn, rid):
             _guardar_adjuntos(conn, rid, archivos)
             conn.commit()
+            agregado = True
     finally:
         conn.close()
+    if agregado:
+        _log_evento(request, f"Adjunto agregado a rendición {rid}")
     return RedirectResponse(f"/pagos/rendiciones/{rid}", status_code=303)
 
 
@@ -1208,17 +1280,21 @@ def rendicion_eliminar_adjunto(request: Request, rid: int, adj_id: int):
     if not _guard(request):
         return RedirectResponse("/", status_code=303)
     conn = db.get_conn()
+    eliminado = False
     try:
         adj = db.adjunto_por_id(conn, adj_id)
         if adj and adj["rendicion_id"] == rid:
             db.eliminar_adjunto(conn, adj_id, rid)
             conn.commit()
+            eliminado = True
             try:
                 Path(adj["path"]).unlink(missing_ok=True)
             except OSError:
                 pass
     finally:
         conn.close()
+    if eliminado:
+        _log_evento(request, f"Adjunto eliminado de rendición {rid} · adjunto id {adj_id}")
     return RedirectResponse(f"/pagos/rendiciones/{rid}", status_code=303)
 
 
@@ -1228,6 +1304,8 @@ def rendicion_eliminar(request: Request, rid: int):
         return RedirectResponse("/", status_code=303)
     conn = db.get_conn()
     try:
+        r = db.rendicion_por_id(conn, rid)
+        nombre = r["nombre"] if r else f"id {rid}"
         paths = db.eliminar_rendicion(conn, rid)
         conn.commit()
     finally:
@@ -1237,6 +1315,7 @@ def rendicion_eliminar(request: Request, rid: int):
             Path(p).unlink(missing_ok=True)
         except OSError:
             pass
+    _log_evento(request, f"Rendición ELIMINADA · {nombre} (id {rid})")
     return RedirectResponse("/pagos/rendiciones", status_code=303)
 
 
@@ -1361,6 +1440,7 @@ async def export_cc_subir(request: Request, desde: str = Form(""), hasta: str = 
         conn.commit()
     finally:
         conn.close()
+    _log_evento(request, f"Cartola bancaria cargada · {len(movimientos)} movimientos ({d} a {h})")
     return RedirectResponse(f"/export?desde={d}&hasta={h}&cc_ok=1", status_code=303)
 
 
@@ -1568,12 +1648,17 @@ async def admin_import(request: Request, secret: str = ""):
         conn.commit()
     finally:
         conn.close()
+    _log_evento(
+        request,
+        f"Importación admin (migración) · {resumen['rendiciones_creadas']} rendiciones, "
+        f"{resumen['pagos_facturas_ok']} pagos",
+    )
     return JSONResponse(resumen)
 
 
 @app.post("/admin/import/adjunto")
-async def admin_import_adjunto(rendicion_id: int = Form(...), secret: str = Form(...),
-                               archivo: UploadFile = File(...)):
+async def admin_import_adjunto(request: Request, rendicion_id: int = Form(...),
+                               secret: str = Form(...), archivo: UploadFile = File(...)):
     if not _admin_guard(secret):
         return Response(status_code=404)
     conn = db.get_conn()
@@ -1584,6 +1669,7 @@ async def admin_import_adjunto(rendicion_id: int = Form(...), secret: str = Form
         conn.commit()
     finally:
         conn.close()
+    _log_evento(request, f"Adjunto importado (admin) a rendición {rendicion_id}")
     return JSONResponse({"ok": True})
 
 
@@ -1591,6 +1677,7 @@ async def admin_import_adjunto(rendicion_id: int = Form(...), secret: str = Form
 def logout(request: Request):
     sid = request.session.get("sid")
     if sid and sid in SII_SESSIONS:
+        _log_evento(request, "Cierre de sesión")
         SII_SESSIONS.pop(sid).logout()
     request.session.clear()
     return RedirectResponse("/", status_code=303)

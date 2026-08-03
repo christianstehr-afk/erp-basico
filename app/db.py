@@ -202,6 +202,20 @@ CREATE TABLE IF NOT EXISTS cc_banco (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cc_banco_fecha ON cc_banco(fecha);
+
+-- Módulo 6 · Log de auditoría: registra fecha, hora y una descripción de cada
+-- operación relevante hecha en la app (crear/editar/eliminar), para poder
+-- reconstruir qué pasó si algo se borra por accidente (p. ej. una rendición).
+CREATE TABLE IF NOT EXISTS logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha      TEXT NOT NULL,              -- YYYY-MM-DD
+    hora       TEXT NOT NULL,              -- HH:MM:SS
+    accion     TEXT NOT NULL,              -- descripción de la operación realizada
+    usuario    TEXT,                        -- RUT de quien tenía la sesión activa
+    creado_en  TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_fecha ON logs(fecha, hora);
 """
 
 
@@ -856,3 +870,24 @@ def rendiciones_pendientes(conn: sqlite3.Connection) -> list[dict]:
         })
     res.sort(key=lambda d: d["fecha"] or "")
     return res
+
+
+# ---------------------------------------------------------------------------
+# Módulo 6 · Log de auditoría
+# ---------------------------------------------------------------------------
+
+def registrar_log(conn: sqlite3.Connection, accion: str, usuario: str | None = None) -> None:
+    """Guarda una fila en el log: fecha, hora, la acción (texto libre) y,
+    si hay sesión activa, el RUT del usuario que la ejecutó."""
+    ahora = datetime.now()
+    conn.execute(
+        "INSERT INTO logs (fecha, hora, accion, usuario) VALUES (?, ?, ?, ?)",
+        (ahora.strftime("%Y-%m-%d"), ahora.strftime("%H:%M:%S"), accion, usuario),
+    )
+
+
+def listar_logs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Todo el historial de operaciones registradas, más recientes primero."""
+    return conn.execute(
+        "SELECT fecha, hora, accion, usuario FROM logs ORDER BY id DESC"
+    ).fetchall()

@@ -141,6 +141,54 @@ def construir_excel(movimientos: list[dict], desde: str, hasta: str) -> bytes:
     return buf.getvalue()
 
 
+def construir_excel_logs(logs: list) -> bytes:
+    """Arma el .xlsx del log de auditoría (fecha, hora, acción, usuario) y lo
+    devuelve en bytes. `logs` es el resultado de db.listar_logs (más recientes
+    primero)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Log"
+
+    tinta = "FF0A0A0A"
+
+    ws["A1"] = "Log de operaciones · ERP e-auto"
+    ws["A1"].font = Font(name="Calibri", size=14, bold=True, color=tinta)
+    ws["A2"] = f"Total de registros: {len(logs)}"
+    ws["A2"].font = Font(name="Calibri", size=10, color="FF666666")
+
+    encabezados = ["Fecha", "Hora", "Acción", "Usuario"]
+    fila_head = 4
+    borde = Border(bottom=Side(style="thin", color="FFDDDDDD"))
+    for col, texto in enumerate(encabezados, start=1):
+        c = ws.cell(row=fila_head, column=col, value=texto)
+        c.font = Font(bold=True, color="FFFFFFFF")
+        c.fill = PatternFill("solid", fgColor=tinta)
+        c.alignment = Alignment(horizontal="left")
+
+    fila = fila_head + 1
+    for log in logs:
+        ws.cell(row=fila, column=1, value=log["fecha"])
+        ws.cell(row=fila, column=2, value=log["hora"])
+        ws.cell(row=fila, column=3, value=log["accion"])
+        ws.cell(row=fila, column=4, value=log["usuario"] or "")
+        for col in range(1, 5):
+            ws.cell(row=fila, column=col).border = borde
+        fila += 1
+
+    anchos = {1: 13, 2: 11, 3: 70, 4: 16}
+    for col, w in anchos.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
+    ws.freeze_panes = "A5"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # PDF por rendición
 # ---------------------------------------------------------------------------
