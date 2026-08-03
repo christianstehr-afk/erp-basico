@@ -147,7 +147,10 @@ def index(request: Request, relogin: int = 0, rut: str = ""):
             "request": request,
             "error": _MSG_SESION_PERDIDA if relogin else None,
             "rut_prefill": rut,
-            "rut_empresa_prefill": EMPRESA_RUT,
+            # A propósito en blanco (no EMPRESA_RUT): no exponer el RUT de la
+            # empresa a cualquiera que llegue a la URL, ver pedido de
+            # Christian 2026-08-03 (riesgo de seguridad).
+            "rut_empresa_prefill": "",
         },
     )
 

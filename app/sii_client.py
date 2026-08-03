@@ -117,22 +117,24 @@ class SIIClient:
 
         texto = home.text.lower()
 
-        # Señales de credenciales inválidas
+        # Señales de credenciales inválidas (chequeo temprano, solo para dar
+        # un mensaje más específico cuando el SII las incluye; no es la
+        # verificación real de acceso — ver nota de seguridad abajo).
         if any(s in texto for s in ("clave incorrecta", "no coinciden", "usuario y/o clave", "clave errada")):
             raise SIIAuthError("RUT o Clave Tributaria incorrectos.")
 
-        # Señales de sesión iniciada correctamente
-        autenticado = (
-            bool(self.session.cookies.get("TOKEN"))
-            or "cerrar sesión" in texto
-            or "cerrar sesion" in texto
-            or "mi sii" in texto
-        )
-        if not autenticado:
-            raise SIIAuthError(
-                "No se pudo verificar la sesión con el SII. "
-                "Revisa el RUT y la clave, o inténtalo nuevamente."
-            )
+        # NOTA DE SEGURIDAD (2026-08-03): la señal de "login correcto" NO debe
+        # basarse en texto de la página como "mi sii" o "cerrar sesión": esas
+        # frases pueden aparecer en el encabezado/branding de CUALQUIER
+        # página del SII (el sitio se llama literalmente "Mi SII"), incluida
+        # una página de error o de credenciales inválidas — eso dejaría
+        # entrar a cualquiera con cualquier clave. La única señal confiable
+        # es la cookie TOKEN, que el SII solo entrega tras autenticar de
+        # verdad (es la misma cookie que ya se usa como conversationId en
+        # sii_rcv.py, confirmada real en producción). Sin esa cookie, se
+        # trata como credenciales inválidas y NO se entra al Cockpit.
+        if not self.session.cookies.get("TOKEN"):
+            raise SIIAuthError("RUT o Clave Tributaria incorrectos.")
 
         self.rut = f"{numero}-{dv}"
 
