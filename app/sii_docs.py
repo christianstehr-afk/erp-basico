@@ -181,29 +181,41 @@ def obtener_documentos(
     return docs
 
 
-def obtener_pdf_bytes(session: requests.Session, fuente: str, codigo: str) -> bytes:
+def obtener_pdf_bytes(session: requests.Session, fuente: str, codigo: str) -> bytes | None:
     """Descarga el PDF del documento y lo devuelve en memoria (sin guardarlo en disco).
 
     Se usa para servirlo al vuelo cuando el usuario lo pide (ver /pdf/{codigo}/ver
     en main.py), en vez de guardar una copia local como hacía `descargar_pdf`.
 
-    Con sesión válida y un código de documento existente, esta URL solo tiene
-    dos resultados posibles: el PDF, o una pantalla de login porque el SII
-    cerró la sesión. Antes se distinguía el segundo caso buscando frases
-    conocidas ("clave tributaria", "sesión ha expirado", etc.) en el HTML, pero
-    en producción el SII devolvió una variante de esa pantalla que no calzó
-    con ninguna frase reconocida: el usuario vio un error genérico ("Intenta
-    de nuevo") en vez del aviso de sesión perdida con el link para reingresar
-    su Clave Tributaria. Por eso ahora se trata cualquier respuesta que no sea
-    el PDF como sesión perdida, sin depender de reconocer el HTML exacto.
+    HISTORIAL (ver conversación 2026-07-31 y 2026-08-02): en un primer intento
+    (commit b03e0fe) cualquier respuesta que no fuera el PDF se trataba como
+    sesión perdida, porque la detección por frases conocidas ("clave
+    tributaria", "sesión ha expirado", etc.) había resultado frágil. Pero eso
+    resultó ser DEMASIADO agresivo en la dirección contraria: una falla
+    puntual al pedir UN PDF (ej. hiccup del SII, timeout, codigo puntual con
+    problema) invalidaba TODA la sesión SII guardada (SII_SESSIONS +
+    SII_SESSIONS_BHE), dejando al usuario deslogueado de la app aunque su
+    sesión con el SII siguiera perfectamente viva — reproducido en vivo
+    2026-08-02 (un solo clic en un folio bastó para forzar relogin).
+    La detección de sesión realmente perdida YA está resuelta de forma
+    confiable en otro lado: `obtener_documentos` (usado por el sync) y
+    GET /sii/estado (chequeo liviano que el Cockpit dispara solo, ver
+    main.py) — ambos confirman sesión viva/muerta pidiendo la lista de
+    documentos, no un PDF puntual. Por eso esta función ya NO lanza
+    SIISessionExpirada: si la respuesta no es un PDF válido, simplemente
+    devuelve None (igual que `descargar_pdf`) y quien la llama muestra un
+    error de "intenta de nuevo" SIN tocar la sesión guardada. Si la sesión de
+    verdad se perdió, el usuario lo va a notar en el próximo sync o chequeo
+    de /sii/estado, que sí es confiable.
     """
     cfg = FUENTES[fuente]
-    resp = session.get(cfg["pdf_url"], params={cfg["pdf_param"]: codigo}, timeout=60)
+    try:
+        resp = session.get(cfg["pdf_url"], params={cfg["pdf_param"]: codigo}, timeout=60)
+    except requests.RequestException:
+        return None
     if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
         return resp.content
-    raise SIISessionExpirada(
-        "La sesión con el SII se perdió (probablemente por inactividad)."
-    )
+    return None
 
 
 # Notas de Crédito Electrónicas que dejan sin efecto una factura completa

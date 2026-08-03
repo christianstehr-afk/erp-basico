@@ -32,7 +32,7 @@ EMPRESA_RUT = os.environ.get("EMPRESA_RUT", "77708215-9")
 ANIO = int(os.environ.get("ANIO", "2026"))
 # Inicio en producción del ERP: solo se sincronizan documentos desde esta
 # fecha (junio 2026) en adelante.
-DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-05-01")
+DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-03-01")
 
 # Carpeta donde se guardan los adjuntos de rendiciones (boletas/facturas).
 ADJUNTOS_DIR = Path(
@@ -428,12 +428,11 @@ def pdf_ver(request: Request, codigo: str):
     fuente = _FUENTE_POR_TIPO.get(row["tipo"])
     if not fuente:
         return Response("PDF no disponible", status_code=404)
-    try:
-        data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
-    except SIISessionExpirada:
-        rut = client.rut
-        _invalidar_sesion(request)
-        return _html_sesion_perdida(rut)
+    # obtener_pdf_bytes ya no lanza SIISessionExpirada (ver docstring en
+    # sii_docs.py): una falla puntual de ESTE PDF ya no invalida toda la
+    # sesión SII guardada. La sesión de verdad perdida se detecta aparte, en
+    # el sync y en /sii/estado.
+    data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
     if not data:
         return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
     # Sin filename => se muestra embebido (inline) en el visor
@@ -470,12 +469,8 @@ def pdf_descargar(request: Request, codigo: str):
     fuente = _FUENTE_POR_TIPO.get(row["tipo"])
     if not fuente:
         return Response("PDF no disponible", status_code=404)
-    try:
-        data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
-    except SIISessionExpirada:
-        rut = client.rut
-        _invalidar_sesion(request)
-        return _html_sesion_perdida(rut)
+    # Ver nota en /pdf/{codigo}/ver: una falla puntual ya no invalida la sesión.
+    data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
     if not data:
         return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
     # Con filename => Content-Disposition attachment => fuerza la descarga
@@ -623,10 +618,8 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
     else:
         fuente = _FUENTE_POR_TIPO.get(cfg["tipo"])
         if fuente:
-            try:
-                factura_bytes = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
-            except SIISessionExpirada:
-                factura_bytes = None
+            # Ya no lanza SIISessionExpirada; None si no se pudo obtener.
+            factura_bytes = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
 
     data = exportar._pdf_de_gestion_pago(
         f, pagos, cfg,
