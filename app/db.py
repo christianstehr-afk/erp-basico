@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -59,6 +60,35 @@ def respaldar_db() -> Path | None:
         return destino
     except Exception:
         return None  # un respaldo fallido nunca debe tumbar el arranque
+
+
+def respaldo_bytes() -> bytes:
+    """Genera un respaldo consistente de la BD viva y lo devuelve en memoria,
+    listo para servir como descarga (ver GET /respaldo en main.py).
+
+    Usa la API de backup de sqlite3 (Connection.backup) en vez de copiar el
+    archivo directo: es segura aunque haya una escritura en curso en ese
+    instante (a diferencia de shutil.copy2, que podría copiar el archivo a
+    mitad de una transacción). No toca BACKUP_DIR ni el historial de
+    respaldos periódicos de respaldar_db(); es una copia aparte, al vuelo.
+    """
+    fd, tmp_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    tmp = Path(tmp_path)
+    try:
+        origen = sqlite3.connect(DB_PATH)
+        try:
+            destino = sqlite3.connect(tmp)
+            try:
+                origen.backup(destino)
+            finally:
+                destino.close()
+        finally:
+            origen.close()
+        return tmp.read_bytes()
+    finally:
+        tmp.unlink(missing_ok=True)
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS facturas (

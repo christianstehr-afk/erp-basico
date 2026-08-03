@@ -343,6 +343,20 @@ def facturas_alias():
     return RedirectResponse("/recibidas", status_code=303)
 
 
+@app.get("/respaldo")
+def respaldo_db(request: Request):
+    """Descarga un respaldo completo de la base de datos (botón del Cockpit)."""
+    client = _current_client(request)
+    if not client or not client.rut:
+        return RedirectResponse("/", status_code=303)
+    data = db.respaldo_bytes()
+    nombre = f"RespaldoERP_{date.today():%Y%m%d}.db"
+    return Response(
+        content=data, media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
 # Los PDF de facturas ya NO se guardan en disco: se piden al SII al momento
 # de verlos, con la sesión activa del usuario. `tipo` en BD -> fuente sii_docs.
 _FUENTE_POR_TIPO = {"compra": "recibidos", "venta": "emitidos"}
