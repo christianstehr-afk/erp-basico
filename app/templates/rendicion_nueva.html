@@ -79,7 +79,7 @@
         <div class="eyebrow" style="margin-bottom:12px">Adjuntos (boletas/facturas) · opcional</div>
         <div id="archivos-body" style="display:flex;flex-direction:column;gap:10px">
           <div style="display:flex;gap:10px;align-items:center">
-            <input type="file" name="archivos" multiple
+            <input type="file" name="archivos" multiple accept="image/*,application/pdf"
                    style="flex:1;color:var(--mist);font-size:13px">
             <button type="button" class="del-archivo" title="Quitar"
               style="background:none;border:1px solid #2b2b2b;color:var(--slate);padding:6px 10px;border-radius:var(--radius);font-size:13px">×</button>
@@ -151,7 +151,7 @@
         div.style.gap = "10px";
         div.style.alignItems = "center";
         div.innerHTML =
-          '<input type="file" name="archivos" multiple style="flex:1;color:var(--mist);font-size:13px">' +
+          '<input type="file" name="archivos" multiple accept="image/*,application/pdf" style="flex:1;color:var(--mist);font-size:13px">' +
           '<button type="button" class="del-archivo" title="Quitar" style="background:none;border:1px solid #2b2b2b;color:var(--slate);padding:6px 10px;border-radius:var(--radius);font-size:13px">×</button>';
         archivosBody.appendChild(div);
         conectarDel(div);

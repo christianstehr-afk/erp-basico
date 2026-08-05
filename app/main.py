@@ -1404,6 +1404,26 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
     )
 
 
+@app.get("/movimientos/pdf")
+def movimientos_pdf(request: Request, desde: str = "", hasta: str = ""):
+    """PDF del listado de Movimientos CC (botón "Ver PDF" de /movimientos):
+    mismo rango y mismo orden (fecha descendente) que se ve en pantalla."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    try:
+        movs = db.movimientos_cc_en_rango(conn, d, h)
+    finally:
+        conn.close()
+    movs = list(reversed(movs))  # mismo orden que /movimientos: fecha descendente
+    total_ing = sum(m["monto"] for m in movs if m["flujo"] == "Ingreso")
+    total_egr = sum(m["monto"] for m in movs if m["flujo"] == "Egreso")
+    data = exportar.construir_pdf_movimientos_cc(movs, d, h, total_ing, total_egr)
+    return Response(content=data, media_type="application/pdf")
+
+
 @app.post("/movimientos/agregar")
 def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = Form(...),
                         descripcion: str = Form(...), monto: str = Form(...),

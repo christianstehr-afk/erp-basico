@@ -600,6 +600,116 @@ def construir_zip_rendiciones(rendiciones: list[dict]) -> bytes:
     return buf.getvalue()
 
 
+# ---------------------------------------------------------------------------
+# Módulo 5 · PDF del listado de Movimientos CC
+# ---------------------------------------------------------------------------
+
+_ORIGEN_LABEL = {"factura": "Factura", "rendicion": "Rendición", "manual": "Manual"}
+
+
+def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
+                                 total_ingresos: int, total_egresos: int) -> bytes:
+    """PDF del listado de Movimientos CC, en el mismo orden y rango con que se
+    armó `movs` en pantalla (ver GET /movimientos/pdf en main.py: usa
+    exactamente los mismos `movs`/`desde`/`hasta` que /movimientos)."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    W, H = A4
+    mx = 15 * mm
+    col_fecha = mx
+    col_tipo = mx + 22 * mm
+    col_desc = mx + 42 * mm
+    col_monto_r = W - mx - 33 * mm  # borde derecho de la columna Monto
+    col_origen = W - mx - 27 * mm
+
+    def _encabezado(y: float) -> float:
+        logo = _logo_reader()
+        if logo is not None:
+            try:
+                iw, ih = logo.getSize()
+                logo_h = 12 * mm
+                logo_w = logo_h * iw / ih
+                c.drawImage(logo, W - mx - logo_w, y - 9 * mm, logo_w, logo_h,
+                            preserveAspectRatio=True, mask="auto")
+            except Exception:
+                pass
+        c.setFillColorRGB(0, 0.58, 0.023)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(mx, y, "E-AUTO · MOVIMIENTOS CC")
+        y -= 9 * mm
+        c.setFillColorRGB(0.04, 0.04, 0.04)
+        c.setFont("Helvetica-Bold", 17)
+        c.drawString(mx, y, "Movimientos CC")
+        y -= 7 * mm
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.setFont("Helvetica", 10)
+        c.drawString(mx, y, f"Del {desde} al {hasta}")
+        y -= 8 * mm
+        neto = (total_ingresos or 0) - (total_egresos or 0)
+        c.setFillColorRGB(0.04, 0.04, 0.04)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(
+            mx, y,
+            f"Ingresos: ${_miles(total_ingresos)}    Egresos: ${_miles(total_egresos)}    Neto: ${_miles(neto)}",
+        )
+        y -= 10 * mm
+        return _encabezado_tabla(y)
+
+    def _encabezado_tabla(y: float) -> float:
+        c.setFont("Helvetica-Bold", 8)
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawString(col_fecha, y, "FECHA")
+        c.drawString(col_tipo, y, "TIPO")
+        c.drawString(col_desc, y, "DESCRIPCIÓN")
+        c.drawRightString(col_monto_r, y, "MONTO")
+        c.drawString(col_origen, y, "ORIGEN")
+        y -= 2 * mm
+        c.setStrokeColorRGB(0.85, 0.85, 0.85)
+        c.line(mx, y, W - mx, y)
+        y -= 5.5 * mm
+        c.setFont("Helvetica", 8.5)
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        return y
+
+    y = _encabezado(H - 22 * mm)
+
+    for m in movs:
+        if y < 20 * mm:
+            c.showPage()
+            y = _encabezado_tabla(H - 20 * mm)
+        ingreso = m["flujo"] == "Ingreso"
+        color_flujo = (0, 0.45, 0.1) if ingreso else (0.63, 0.11, 0.09)
+
+        c.setFillColorRGB(*color_flujo)
+        c.setFont("Helvetica", 8.5)
+        c.drawString(col_fecha, y, str(m["fecha"] or ""))
+        c.drawString(col_tipo, y, m["flujo"] or "")
+
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        c.drawString(col_desc, y, (m["descripcion"] or "")[:48])
+
+        c.setFillColorRGB(*color_flujo)
+        c.drawRightString(col_monto_r, y, f"${_miles(m['monto'])}")
+
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(col_origen, y, _ORIGEN_LABEL.get(m["origen"], m["origen"] or ""))
+
+        y -= 5.5 * mm
+
+    if not movs:
+        c.setFont("Helvetica", 10)
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawString(mx, y, "No hay movimientos registrados en este rango.")
+
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 # Carpetas/archivos que nunca deben ir en el respaldo de código, aunque
 # aparezcan bajo code_dir en un entorno local (en Railway ni siquiera existen,
 # ver .dockerignore): son datos, entornos o carpetas de trabajo de Christian,

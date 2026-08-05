@@ -115,7 +115,7 @@
       {% endif %}
       <form method="post" action="/pagos/rendiciones/{{ r['id'] }}/adjunto" enctype="multipart/form-data"
             style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid #161616;padding-top:16px">
-        <input type="file" name="archivos" multiple required style="color:var(--mist);font-size:13px">
+        <input type="file" name="archivos" multiple required accept="image/*,application/pdf" style="color:var(--mist);font-size:13px">
         <button type="submit"
           style="background:none;border:1px solid #2b2b2b;color:var(--snow);padding:8px 14px;border-radius:var(--radius);font-size:13px">+ Agregar archivo</button>
       </form>
