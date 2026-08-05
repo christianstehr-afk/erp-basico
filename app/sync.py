@@ -36,9 +36,32 @@ estado_sync: dict = {
 }
 
 
+def _anios_a_sincronizar(anio_hasta: int, desde: str | None) -> list[int]:
+    """Años del SII a consultar: desde el año de `desde` (YYYY-MM-DD) hasta
+    `anio_hasta` inclusive, ambos por separado (el SII organiza recibidos,
+    emitidos y boletas por año/mes, así que un `desde` de un año anterior
+    exige una consulta extra por cada año de por medio).
+
+    Sin `desde` (o si viene mal formado), se mantiene el comportamiento
+    anterior: solo `anio_hasta`.
+    """
+    if not desde:
+        return [anio_hasta]
+    try:
+        anio_desde = int(desde[:4])
+    except (ValueError, IndexError):
+        return [anio_hasta]
+    if anio_desde > anio_hasta:
+        return [anio_hasta]
+    return list(range(anio_desde, anio_hasta + 1))
+
+
 def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
                 client_bhe: SIIClient | None = None, rut_empresa: str | None = None) -> dict:
-    """Actualiza la BD con recibidas, emitidas y boletas de honorarios del año.
+    """Actualiza la BD con recibidas, emitidas y boletas de honorarios.
+
+    Consulta cada año entre el de `desde` (si viene) y `anio` inclusive,
+    porque el SII lista los documentos y boletas año por año.
 
     `client_bhe`/`rut_empresa`: sesión y RUT de la cuenta "empresa", usada
     solo para boletas de honorarios recibidas (ver sii_bhe.py). Si vienen en
@@ -47,9 +70,13 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
     Devuelve un resumen con cuántos documentos se trajeron de cada tipo.
     """
     estado_sync.update(corriendo=True, error=None, fase="Consultando SII…", sesion_perdida=False)
+    anios = _anios_a_sincronizar(anio, desde)
     try:
-        recibidos = sii_docs.obtener_documentos(client.session, "recibidos", anio=anio)
-        emitidos = sii_docs.obtener_documentos(client.session, "emitidos", anio=anio)
+        recibidos: list[dict] = []
+        emitidos: list[dict] = []
+        for a in anios:
+            recibidos.extend(sii_docs.obtener_documentos(client.session, "recibidos", anio=a))
+            emitidos.extend(sii_docs.obtener_documentos(client.session, "emitidos", anio=a))
     except SIISessionExpirada as exc:
         estado_sync.update(corriendo=False, error=str(exc), fase="Sesión perdida", sesion_perdida=True)
         raise
@@ -125,7 +152,10 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         if client_bhe is not None and rut_empresa:
             estado_sync["fase"] = "Consultando boletas de honorarios…"
             try:
-                boletas = sii_bhe.obtener_boletas_recibidas(client_bhe.session, rut_empresa, anio, desde=desde)
+                boletas = []
+                for a in anios:
+                    boletas.extend(sii_bhe.obtener_boletas_recibidas(
+                        client_bhe.session, rut_empresa, a, desde=desde))
                 if desde:
                     boletas = [b for b in boletas if (b.get("fecha") or "") >= desde]
                 for b in boletas:

@@ -31,8 +31,10 @@ BASE_DIR = Path(__file__).resolve().parent
 EMPRESA_RUT = os.environ.get("EMPRESA_RUT", "77708215-9")
 ANIO = int(os.environ.get("ANIO", "2026"))
 # Inicio en producción del ERP: solo se sincronizan documentos desde esta
-# fecha (junio 2026) en adelante.
-DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-01-01")
+# fecha en adelante. Ajustado 2026-08-04 a pedido de Christian para traer
+# también noviembre-diciembre 2025 (antes era "2026-01-01"); sync.py ahora
+# recorre cada año entre el de DESDE_SYNC y ANIO por separado.
+DESDE_SYNC = os.environ.get("DESDE_SYNC", "2025-11-01")
 
 # Carpeta donde se guardan los adjuntos de rendiciones (boletas/facturas).
 ADJUNTOS_DIR = Path(
