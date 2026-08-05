@@ -1384,7 +1384,7 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
         "movimientos_cc.html",
         {
             "request": request, "rut": client.rut,
-            "desde": d, "hasta": h, "movs": movs,
+            "desde": d, "hasta": h, "movs": movs, "hoy": date.today().isoformat(),
             "total_ingresos": total_ing, "total_egresos": total_egr,
             "neto": total_ing - total_egr, "error": error or None,
         },
