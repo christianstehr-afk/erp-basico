@@ -682,7 +682,7 @@ def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
             c.showPage()
             y = _encabezado_tabla(H - 20 * mm)
         ingreso = m["flujo"] == "Ingreso"
-        color_flujo = (0, 0.45, 0.1) if ingreso else (0.63, 0.11, 0.09)
+        color_flujo = (0, 0.45, 0.1) if ingreso else (0.231, 0.510, 0.965)
 
         c.setFillColorRGB(*color_flujo)
         c.setFont("Helvetica", 8.5)

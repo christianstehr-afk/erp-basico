@@ -108,7 +108,7 @@
       </div>
       <div>
         <div class="eyebrow" style="margin-bottom:6px">Egresos</div>
-        <div style="font-family:var(--mono);font-size:20px;font-weight:600;color:#c0392b">${{ "{:,.0f}".format(total_egresos).replace(",", ".") }}</div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:600;color:#3b82f6">${{ "{:,.0f}".format(total_egresos).replace(",", ".") }}</div>
       </div>
       <div>
         <div class="eyebrow" style="margin-bottom:6px">Neto</div>
@@ -135,12 +135,12 @@
         <tbody>
           {% for m in movs %}
           {% set ing = m["flujo"] == "Ingreso" %}
-          {% set color = 'var(--green)' if ing else '#c0392b' %}
+          {% set color = 'var(--green)' if ing else '#3b82f6' %}
           {% set manual = m["origen"] == "manual" %}
           <tr id="fila-{{ m['id'] }}" class="mcc-row" data-id="{{ m['id'] }}" style="border-top:1px solid #161616">
             <td data-value="{{ m['fecha'] }}" style="padding:11px 14px;font-family:var(--mono)">{{ m["fecha"] }}</td>
             <td data-value="{{ m['flujo'] }}" style="padding:11px 14px">
-              <span class="mcc-badge" style="background:{{ 'rgba(0,148,6,.15)' if ing else 'rgba(192,57,43,.15)' }};color:{{ color }}">{{ m["flujo"] }}</span>
+              <span class="mcc-badge" style="background:{{ 'rgba(0,148,6,.15)' if ing else 'rgba(59,130,246,.15)' }};color:{{ color }}">{{ m["flujo"] }}</span>
             </td>
             <td data-value="{{ (m['descripcion'] or '')|lower }}" style="padding:11px 14px">{{ m["descripcion"] }}</td>
             <td data-value="{{ m['monto'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">${{ "{:,.0f}".format(m["monto"]).replace(",", ".") }}</td>

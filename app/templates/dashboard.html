@@ -313,7 +313,7 @@
             <span style="font-family:var(--mono);font-size:11px;color:var(--slate)">
               {{ movimientos_mes|length }} este mes ·
               <span style="color:var(--green)">${{ "{:,.0f}".format(total_ing_mes).replace(",", ".") }}</span> /
-              <span style="color:#c0392b">${{ "{:,.0f}".format(total_egr_mes).replace(",", ".") }}</span>
+              <span style="color:#3b82f6">${{ "{:,.0f}".format(total_egr_mes).replace(",", ".") }}</span>
             </span>
           </div>
           <a class="cockpit-side-btn" href="/movimientos">EDITAR MOVIMIENTOS →</a>
@@ -332,12 +332,12 @@
             <tbody>
               {% for m in movimientos_mes %}
               {% set ing = m["flujo"] == "Ingreso" %}
-              {% set color = 'var(--green)' if ing else '#c0392b' %}
+              {% set color = 'var(--green)' if ing else '#3b82f6' %}
               <tr>
                 <td class="mono" data-value="{{ m['fecha'] }}">{{ m["fecha"] }}</td>
                 <td data-value="{{ m['flujo'] }}">
                   <span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;
-                    background:{{ 'rgba(0,148,6,.15)' if ing else 'rgba(192,57,43,.15)' }};color:{{ color }}">{{ m["flujo"] }}</span>
+                    background:{{ 'rgba(0,148,6,.15)' if ing else 'rgba(59,130,246,.15)' }};color:{{ color }}">{{ m["flujo"] }}</span>
                 </td>
                 <td>{{ m["descripcion"] }}</td>
                 <td class="r" data-value="{{ m['monto'] }}" style="color:{{ color }}">${{ "{:,.0f}".format(m["monto"]).replace(",", ".") }}</td>
