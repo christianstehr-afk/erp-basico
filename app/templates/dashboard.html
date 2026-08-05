@@ -77,7 +77,12 @@
               wrap=document.getElementById('sync-prog'),
               fill=document.getElementById('sync-fill'),
               msg=document.getElementById('sync-msg'),
-              timer=null;
+              timer=null,
+              // Si ya había una sincronización corriendo al cargar la página
+              // (p.ej. la disparó el login, u otra pestaña), arrancamos ya
+              // "vista" corriendo para no perdernos el instante en que
+              // termina.
+              corriendoVista={{ 'true' if sync and sync.corriendo else 'false' }};
           function pintar(st){
             wrap.classList.add('on');
             btn.disabled=true;
@@ -94,10 +99,13 @@
             }
           }
           function fin(err){
-            clearInterval(timer);timer=null;
             fill.classList.remove('indet');fill.style.width='100%';
             msg.textContent=err?('Error: '+err):'Listo · actualizando…';
             btn.disabled=false;
+            // Refresca el Cockpit (y sus tablas) apenas termina la
+            // sincronización, la haya disparado esta pestaña, el login, u
+            // otra pestaña: es un reload completo, así que igual habría que
+            // seguir viendo el estado si no recargara.
             if(!err) setTimeout(function(){location.reload();},800);
           }
           function sesionPerdida(){
@@ -109,24 +117,36 @@
           function poll(){
             fetch('/sync/estado').then(function(r){return r.json();}).then(function(st){
               if(st.sesion_perdida){sesionPerdida();return;}
-              if(st.error){fin(st.error);return;}
-              if(st.corriendo){pintar(st);}else{fin(null);}
+              if(st.corriendo){
+                corriendoVista=true;
+                pintar(st);
+              }else if(corriendoVista){
+                // Estaba corriendo en el poll anterior y ya no: se acaba de
+                // terminar (con o sin error) — reacciona una sola vez.
+                corriendoVista=false;
+                fin(st.error||null);
+              }
             }).catch(function(){/* reintenta en el próximo tick */});
           }
-          function arrancar(){
+          function vigilar(){
             if(timer) return;
-            wrap.classList.add('on');btn.disabled=true;
-            fill.classList.add('indet');msg.textContent='Iniciando…';
-            timer=setInterval(poll,1000);
+            timer=setInterval(poll,1500);
           }
           btn.addEventListener('click',function(){
-            arrancar();
+            wrap.classList.add('on');btn.disabled=true;
+            fill.classList.add('indet');msg.textContent='Iniciando…';
+            corriendoVista=true;
+            vigilar();
             fetch('/sync',{method:'POST'}).then(function(r){
               if(r.status===401){fin('sesión expirada');}
             }).catch(function(){/* el poll seguirá intentando */});
           });
-          // Si al cargar ya hay una sincronización en curso (p.ej. tras el login), seguirla.
-          {% if sync and sync.corriendo %}arrancar();{% endif %}
+          if(corriendoVista){wrap.classList.add('on');btn.disabled=true;fill.classList.add('indet');msg.textContent='Sincronizando…';}
+          // Vigila todo el tiempo que el Cockpit esté abierto, no solo
+          // cuando esta pestaña dispara el sync: así se entera y refresca
+          // aunque la sincronización la haya iniciado el login u otra
+          // pestaña.
+          vigilar();
         })();
         </script>
       </div>

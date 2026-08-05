@@ -31,10 +31,13 @@ BASE_DIR = Path(__file__).resolve().parent
 EMPRESA_RUT = os.environ.get("EMPRESA_RUT", "77708215-9")
 ANIO = int(os.environ.get("ANIO", "2026"))
 # Inicio en producción del ERP: solo se sincronizan documentos desde esta
-# fecha en adelante. Ajustado 2026-08-04 a pedido de Christian para traer
-# también noviembre-diciembre 2025 (antes era "2026-01-01"); sync.py ahora
-# recorre cada año entre el de DESDE_SYNC y ANIO por separado.
-DESDE_SYNC = os.environ.get("DESDE_SYNC", "2025-11-01")
+# fecha en adelante. Vuelto a "2026-06-01" el 2026-08-05 (estuvo en
+# "2025-11-01" solo para el backfill puntual de nov-dic 2025, ya hecho). Lo
+# sincronizado antes de este corte queda intacto en la BD: este valor solo
+# acota qué se vuelve a consultar en el SII de aquí en adelante, nunca borra
+# nada. sii_bhe/sii_docs ya soportan recorrer varios años si hiciera falta
+# otro backfill (ver sync.py:_anios_a_sincronizar).
+DESDE_SYNC = os.environ.get("DESDE_SYNC", "2026-06-01")
 
 # Carpeta donde se guardan los adjuntos de rendiciones (boletas/facturas).
 ADJUNTOS_DIR = Path(
