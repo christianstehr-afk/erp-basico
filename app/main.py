@@ -570,12 +570,12 @@ SECCIONES = {
     "proveedores": {
         "tipo": "compra", "direccion": "emitido",
         "titulo": "Pago a proveedores", "col_contraparte": "Proveedor",
-        "estado_ok": "Pagada", "label_pagado": "Pagado", "accion": "pago",
+        "estado_ok": "Pagada", "label_pagado": "Pagado", "label_deuda": "Deuda", "accion": "pago",
     },
     "ingresos": {
         "tipo": "venta", "direccion": "recibido",
         "titulo": "Ingresos", "col_contraparte": "Cliente",
-        "estado_ok": "Cobrada", "label_pagado": "Cobrado", "accion": "cobro",
+        "estado_ok": "Cobrada", "label_pagado": "Cobrado", "label_deuda": "Deuda", "accion": "cobro",
     },
 }
 
