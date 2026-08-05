@@ -379,14 +379,21 @@ def facturas_alias():
 
 @app.get("/respaldo")
 def respaldo_db(request: Request):
-    """Descarga un respaldo completo de la base de datos (botón del Cockpit)."""
+    """Descarga un .zip con TODO lo necesario para reconstruir la app frente a
+    un desastre informático (botón "Descargar Respaldo" del Cockpit): la base
+    de datos, los adjuntos de rendiciones y de gestión de facturas, y una
+    copia del código tal como está corriendo. Ver exportar.construir_respaldo_completo."""
     client = _current_client(request)
     if not client or not client.rut:
         return RedirectResponse("/", status_code=303)
-    data = db.respaldo_bytes()
-    nombre = f"RespaldoERP_{date.today():%Y%m%d}.db"
+    db_bytes = db.respaldo_bytes()
+    data = exportar.construir_respaldo_completo(
+        db_bytes, ADJUNTOS_DIR, ADJUNTOS_FACTURAS_DIR, BASE_DIR.parent,
+        fecha=date.today().isoformat(),
+    )
+    nombre = f"RespaldoCompletoERP_{date.today():%Y%m%d}.zip"
     return Response(
-        content=data, media_type="application/octet-stream",
+        content=data, media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
     )
 

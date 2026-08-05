@@ -600,6 +600,79 @@ def construir_zip_rendiciones(rendiciones: list[dict]) -> bytes:
     return buf.getvalue()
 
 
+# Carpetas/archivos que nunca deben ir en el respaldo de código, aunque
+# aparezcan bajo code_dir en un entorno local (en Railway ni siquiera existen,
+# ver .dockerignore): son datos, entornos o carpetas de trabajo de Christian,
+# no código de la app.
+_EXCLUIR_RESPALDO_CODIGO = {
+    "data", ".venv", "venv", "__pycache__", ".git", "Respaldos", "Log",
+    "temp", "node_modules", ".DS_Store",
+}
+
+
+def _leeme_respaldo(fecha: str) -> str:
+    return (
+        "ERP Básico · Respaldo completo\n"
+        "===============================\n\n"
+        f"Generado: {fecha}\n\n"
+        "Qué trae este .zip:\n"
+        "- BaseDatos/erp.db      Toda la información: facturas, pagos, rendiciones,\n"
+        "                        movimientos CC y el log de auditoría.\n"
+        "- Adjuntos/Rendiciones  Boletas/facturas subidas a cada rendición.\n"
+        "- Adjuntos/Facturas     Documentos subidos en la gestión de pago/cobro de\n"
+        "                        cada factura (ojo: los PDF de las facturas del SII\n"
+        "                        NO se guardan acá, se piden al SII al momento de\n"
+        "                        verlos con sesión activa; no hace falta respaldarlos).\n"
+        "- Codigo/               Copia completa del código de la app, tal como estaba\n"
+        "                        corriendo al momento de generar este respaldo.\n\n"
+        "Cómo reconstruir todo desde cero frente a un desastre:\n"
+        "1. Subir la carpeta Codigo/ a un repositorio de GitHub nuevo (o al mismo de\n"
+        "   siempre) y desplegarlo igual que la primera vez (ver Codigo/DEPLOY.md).\n"
+        "2. En el servidor nuevo, copiar BaseDatos/erp.db a la ruta de la variable de\n"
+        "   entorno DB_PATH (en Railway: el volumen persistente, por defecto /data/erp.db).\n"
+        "3. Copiar Adjuntos/Rendiciones a la ruta de ADJUNTOS_DIR (por defecto\n"
+        "   /data/adjuntos/rendiciones) y Adjuntos/Facturas a la ruta de\n"
+        "   ADJUNTOS_FACTURAS_DIR (por defecto /data/adjuntos/facturas).\n"
+        "4. Iniciar la app normalmente: al arrancar crea/actualiza el esquema de la\n"
+        "   base de datos solo, sin tocar los datos ya copiados.\n"
+    )
+
+
+def construir_respaldo_completo(db_bytes: bytes, adjuntos_dir: Path,
+                                adjuntos_facturas_dir: Path, code_dir: Path,
+                                fecha: str) -> bytes:
+    """Arma un .zip con TODO lo necesario para reconstruir la app desde cero
+    frente a un desastre informático: la base de datos, los adjuntos
+    (rendiciones y gestión de pago de facturas) y una copia del código fuente
+    tal como está corriendo ahora mismo. Ver GET /respaldo en main.py (botón
+    "Descargar Respaldo" del Cockpit)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("BaseDatos/erp.db", db_bytes)
+
+        def _agregar_carpeta(origen: Path, prefijo: str) -> None:
+            if not origen.exists():
+                return
+            for p in origen.rglob("*"):
+                if p.is_file():
+                    zf.write(p, f"{prefijo}/{p.relative_to(origen)}")
+
+        _agregar_carpeta(adjuntos_dir, "Adjuntos/Rendiciones")
+        _agregar_carpeta(adjuntos_facturas_dir, "Adjuntos/Facturas")
+
+        if code_dir.exists():
+            for p in code_dir.rglob("*"):
+                if not p.is_file():
+                    continue
+                partes = p.relative_to(code_dir).parts
+                if any(parte in _EXCLUIR_RESPALDO_CODIGO for parte in partes):
+                    continue
+                zf.write(p, f"Codigo/{p.relative_to(code_dir)}")
+
+        zf.writestr("LEEME.txt", _leeme_respaldo(fecha))
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Módulo 5 · Comparación con la cartola del banco
 # ---------------------------------------------------------------------------
