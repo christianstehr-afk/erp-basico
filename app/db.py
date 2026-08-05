@@ -34,6 +34,11 @@ BACKUP_DIR = Path(os.environ.get(
     "DB_BACKUP_DIR", Path(__file__).resolve().parent.parent / "data" / "backups"))
 MAX_BACKUPS = 15  # cuántas copias conservar
 
+# Módulo 5 · Movimientos CC: por ahora el espejo solo cubre desde esta fecha
+# en adelante (coincide con el backfill de facturas/boletas ya hecho para
+# nov-dic 2025; ver comentario de DESDE_SYNC en main.py).
+DESDE_MOVIMIENTOS_CC = "2025-11-01"
+
 
 def _migrar_desde_dropbox() -> None:
     """Si la BD local aún no existe pero sí la antigua en Dropbox, la copia una
@@ -203,6 +208,37 @@ CREATE TABLE IF NOT EXISTS cc_banco (
 
 CREATE INDEX IF NOT EXISTS idx_cc_banco_fecha ON cc_banco(fecha);
 
+-- Módulo 5 · Movimientos CC: espejo editable de la cuenta corriente de la
+-- empresa. Se alimenta solo de los pagos/cobros de facturas y boletas y de
+-- los pagos de rendiciones (mismo criterio que antes calculaba
+-- movimientos_en_rango al vuelo), más los movimientos que se agregan a mano
+-- (origen='manual') para todo lo que la CC del banco muestra pero no nace de
+-- una factura/boleta (comisiones, transferencias sueltas, etc.).
+-- `pago_id` / `rendicion_pago_id` marcan el origen automático de la fila (uno
+-- de los dos, o ninguno si es manual) y permiten mantenerla sincronizada sin
+-- duplicar: se recalcula con sincronizar_movimientos_cc() cada vez que se
+-- agrega o borra un pago, y también al iniciar la app.
+CREATE TABLE IF NOT EXISTS movimientos_cc (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha             TEXT NOT NULL,             -- YYYY-MM-DD
+    flujo             TEXT NOT NULL,              -- 'Ingreso' | 'Egreso'
+    descripcion       TEXT,
+    monto             INTEGER NOT NULL,
+    origen            TEXT NOT NULL,              -- 'factura' | 'rendicion' | 'manual'
+    ref               TEXT,                        -- codigo_sii (factura) o código de rendición, solo para mostrar/enlazar
+    pago_id           INTEGER,                     -- FK pagos.id, si origen='factura'
+    rendicion_pago_id INTEGER,                     -- FK rendicion_pagos.id, si origen='rendicion'
+    creado_en         TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pago_id) REFERENCES pagos(id),
+    FOREIGN KEY (rendicion_pago_id) REFERENCES rendicion_pagos(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mov_cc_fecha ON movimientos_cc(fecha);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mov_cc_pago
+    ON movimientos_cc(pago_id) WHERE pago_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mov_cc_rend_pago
+    ON movimientos_cc(rendicion_pago_id) WHERE rendicion_pago_id IS NOT NULL;
+
 -- Módulo 6 · Log de auditoría: registra fecha, hora y una descripción de cada
 -- operación relevante hecha en la app (crear/editar/eliminar), para poder
 -- reconstruir qué pasó si algo se borra por accidente (p. ej. una rendición).
@@ -264,6 +300,10 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrar(conn)
+        # Backfill + red de seguridad: deja movimientos_cc al día con lo que
+        # ya hay en pagos/rendicion_pagos (idempotente, no duplica en cada
+        # arranque).
+        sincronizar_movimientos_cc(conn)
     respaldar_db()
 
 
@@ -763,6 +803,124 @@ def rendiciones_con_pago_en_rango(conn: sqlite3.Connection, desde: str,
         """,
         (desde, hasta),
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Módulo 5 · Movimientos CC (espejo editable de la cuenta corriente)
+# ---------------------------------------------------------------------------
+
+def sincronizar_movimientos_cc(conn: sqlite3.Connection) -> None:
+    """Mantiene movimientos_cc al día con pagos/cobros de facturas y con pagos
+    de rendiciones (desde DESDE_MOVIMIENTOS_CC en adelante), sin tocar las
+    filas manuales. Idempotente: se puede llamar tantas veces como se quiera
+    (al iniciar la app y después de cada alta/baja de un pago).
+
+    Mismo criterio que antes usaba movimientos_en_rango(): un pago de factura
+    solo cuenta si no fue vía rendición ni externo (esos movimientos de caja
+    ya los aporta, o no los aporta, la rendición/lo externo).
+    """
+    # 1) Agrega los pagos de facturas que califican y todavía no están.
+    conn.execute(
+        """
+        INSERT INTO movimientos_cc (fecha, flujo, descripcion, monto, origen, ref, pago_id)
+        SELECT
+            p.fecha,
+            CASE WHEN p.direccion = 'recibido' THEN 'Ingreso' ELSE 'Egreso' END,
+            TRIM(
+                COALESCE(f.documento, 'Factura')
+                || CASE WHEN f.folio IS NOT NULL THEN ' N° ' || f.folio ELSE '' END
+                || CASE WHEN f.razon_social IS NOT NULL AND f.razon_social <> ''
+                        THEN ' · ' || f.razon_social ELSE '' END
+            ),
+            p.monto, 'factura', f.codigo_sii, p.id
+        FROM pagos p
+        JOIN facturas f ON f.id = p.factura_id
+        WHERE (p.rendicion_id IS NULL) AND (p.externo IS NULL OR p.externo = 0)
+          AND p.fecha >= ?
+          AND p.id NOT IN (
+              SELECT pago_id FROM movimientos_cc WHERE pago_id IS NOT NULL
+          )
+        """,
+        (DESDE_MOVIMIENTOS_CC,),
+    )
+    # 2) Quita las filas "factura" cuyo pago ya no existe o dejó de calificar
+    #    (p. ej. se borró el pago, o pasó a ser vía rendición/externo).
+    conn.execute(
+        """
+        DELETE FROM movimientos_cc
+        WHERE origen = 'factura' AND pago_id IS NOT NULL
+          AND pago_id NOT IN (
+              SELECT id FROM pagos
+              WHERE (rendicion_id IS NULL) AND (externo IS NULL OR externo = 0)
+          )
+        """
+    )
+    # 3) Agrega los pagos de rendiciones que todavía no están.
+    conn.execute(
+        """
+        INSERT INTO movimientos_cc (fecha, flujo, descripcion, monto, origen, ref, rendicion_pago_id)
+        SELECT rp.fecha, 'Egreso',
+               'Rendición R-' || printf('%04d', r.id) || ': ' || r.nombre,
+               rp.monto, 'rendicion', 'R-' || printf('%04d', r.id), rp.id
+        FROM rendicion_pagos rp
+        JOIN rendiciones r ON r.id = rp.rendicion_id
+        WHERE rp.fecha >= ?
+          AND rp.id NOT IN (
+              SELECT rendicion_pago_id FROM movimientos_cc WHERE rendicion_pago_id IS NOT NULL
+          )
+        """,
+        (DESDE_MOVIMIENTOS_CC,),
+    )
+    # 4) Quita las filas "rendicion" cuyo pago ya no existe.
+    conn.execute(
+        """
+        DELETE FROM movimientos_cc
+        WHERE origen = 'rendicion' AND rendicion_pago_id IS NOT NULL
+          AND rendicion_pago_id NOT IN (SELECT id FROM rendicion_pagos)
+        """
+    )
+
+
+def movimientos_cc_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM movimientos_cc WHERE fecha >= ? AND fecha <= ? "
+        "ORDER BY fecha ASC, id ASC",
+        (desde, hasta),
+    ).fetchall()
+
+
+def movimiento_cc_por_id(conn: sqlite3.Connection, mid: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM movimientos_cc WHERE id = ?", (mid,)).fetchone()
+
+
+def agregar_movimiento_manual(conn: sqlite3.Connection, fecha: str, flujo: str,
+                              descripcion: str, monto: int) -> int:
+    cur = conn.execute(
+        "INSERT INTO movimientos_cc (fecha, flujo, descripcion, monto, origen) "
+        "VALUES (?, ?, ?, ?, 'manual')",
+        (fecha, flujo, descripcion, monto),
+    )
+    return cur.lastrowid
+
+
+def editar_movimiento_manual(conn: sqlite3.Connection, mid: int, fecha: str, flujo: str,
+                             descripcion: str, monto: int) -> bool:
+    """Solo actualiza si la fila es manual (nunca toca una fila automática).
+    Devuelve True si se actualizó algo."""
+    cur = conn.execute(
+        "UPDATE movimientos_cc SET fecha = ?, flujo = ?, descripcion = ?, monto = ? "
+        "WHERE id = ? AND origen = 'manual'",
+        (fecha, flujo, descripcion, monto, mid),
+    )
+    return cur.rowcount > 0
+
+
+def eliminar_movimiento_manual(conn: sqlite3.Connection, mid: int) -> bool:
+    """Solo borra si la fila es manual. Devuelve True si se borró algo."""
+    cur = conn.execute(
+        "DELETE FROM movimientos_cc WHERE id = ? AND origen = 'manual'", (mid,)
+    )
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

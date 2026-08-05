@@ -13,6 +13,7 @@ import secrets
 import shutil
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import (
@@ -150,12 +151,16 @@ def index(request: Request, relogin: int = 0, rut: str = ""):
         conn = db.get_conn()
         try:
             hoy = date.today().isoformat()
+            primer_dia_mes = date.today().replace(day=1).isoformat()
             rechazadas = db.facturas_rechazadas(conn)
             pagos_vencidos = db.documentos_vencidos(conn, "compra", hoy)
             cobranza_vencida = db.documentos_vencidos(conn, "venta", hoy)
             rendiciones_pend = db.rendiciones_pendientes(conn)
+            movimientos_mes = db.movimientos_cc_en_rango(conn, primer_dia_mes, hoy)
         finally:
             conn.close()
+        total_ing_mes = sum(m["monto"] for m in movimientos_mes if m["flujo"] == "Ingreso")
+        total_egr_mes = sum(m["monto"] for m in movimientos_mes if m["flujo"] == "Egreso")
         return templates.TemplateResponse(
             "dashboard.html",
             {
@@ -164,6 +169,8 @@ def index(request: Request, relogin: int = 0, rut: str = ""):
                 "rechazadas": rechazadas, "pagos_vencidos": pagos_vencidos,
                 "cobranza_vencida": cobranza_vencida,
                 "rendiciones_pend": rendiciones_pend,
+                "movimientos_mes": movimientos_mes,
+                "total_ing_mes": total_ing_mes, "total_egr_mes": total_egr_mes,
             },
         )
     return templates.TemplateResponse(
@@ -570,12 +577,12 @@ SECCIONES = {
     "proveedores": {
         "tipo": "compra", "direccion": "emitido",
         "titulo": "Pago a proveedores", "col_contraparte": "Proveedor",
-        "estado_ok": "Pagada", "label_pagado": "Pagado", "label_deuda": "Deuda", "accion": "pago",
+        "estado_ok": "Pagada", "label_pagado": "Pagado", "label_deuda": "Saldo", "accion": "pago",
     },
     "ingresos": {
         "tipo": "venta", "direccion": "recibido",
         "titulo": "Ingresos", "col_contraparte": "Cliente",
-        "estado_ok": "Cobrada", "label_pagado": "Cobrado", "label_deuda": "Deuda", "accion": "cobro",
+        "estado_ok": "Cobrada", "label_pagado": "Cobrado", "label_deuda": "Saldo", "accion": "cobro",
     },
 }
 
@@ -806,6 +813,7 @@ def _agregar_movimiento(request: Request, seccion: str, codigo: str,
                     status_code=400)
         db.agregar_pago(conn, f["id"], fecha, monto_int,
                         direccion=cfg["direccion"], rendicion_id=rid, externo=es_externo)
+        db.sincronizar_movimientos_cc(conn)
         conn.commit()
     finally:
         conn.close()
@@ -822,6 +830,7 @@ def _eliminar_movimiento(request: Request, seccion: str, codigo: str, pago_id: i
         f = db.factura_pago_por_codigo(conn, codigo)
         if f:
             db.eliminar_pago(conn, pago_id, f["id"])
+            db.sincronizar_movimientos_cc(conn)
             conn.commit()
             borrado = True
     finally:
@@ -1225,6 +1234,7 @@ def rendicion_agregar_pago(request: Request, rid: int,
                                      error=f"El monto supera el saldo pendiente (${saldo_fmt}).",
                                      status_code=400)
         db.agregar_pago_rendicion(conn, rid, fecha, monto_int)
+        db.sincronizar_movimientos_cc(conn)
         conn.commit()
     finally:
         conn.close()
@@ -1239,6 +1249,7 @@ def rendicion_eliminar_pago(request: Request, rid: int, pago_id: int):
     conn = db.get_conn()
     try:
         db.eliminar_pago_rendicion(conn, pago_id, rid)
+        db.sincronizar_movimientos_cc(conn)
         conn.commit()
     finally:
         conn.close()
@@ -1312,6 +1323,7 @@ def rendicion_eliminar(request: Request, rid: int):
         r = db.rendicion_por_id(conn, rid)
         nombre = r["nombre"] if r else f"id {rid}"
         paths = db.eliminar_rendicion(conn, rid)
+        db.sincronizar_movimientos_cc(conn)
         conn.commit()
     finally:
         conn.close()
@@ -1322,6 +1334,168 @@ def rendicion_eliminar(request: Request, rid: int):
             pass
     _log_evento(request, f"Rendición ELIMINADA · {nombre} (id {rid})")
     return RedirectResponse("/pagos/rendiciones", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Módulo 5 · Movimientos CC (espejo editable de la cuenta corriente)
+#
+# Pantalla "Editar Movimientos" (link desde el cuadro "Movimientos CC" del
+# Cockpit): lista completa de movimientos_cc, con filtro de fechas (default
+# desde DESDE_MOVIMIENTOS_CC hasta hoy). Los que vienen de una factura/boleta
+# o de una rendición son de solo lectura acá (se editan/borran desde su
+# origen y el espejo se sincroniza solo, ver db.sincronizar_movimientos_cc);
+# los manuales se pueden agregar, editar y borrar libremente.
+# ---------------------------------------------------------------------------
+
+def _rango_movimientos(desde: str | None, hasta: str | None) -> tuple[str, str]:
+    """Normaliza el rango de fechas de la pantalla de Movimientos CC.
+    Default: desde DESDE_MOVIMIENTOS_CC (todo lo disponible) hasta hoy."""
+    hoy = date.today().isoformat()
+    d = (desde or "").strip() or db.DESDE_MOVIMIENTOS_CC
+    h = (hasta or "").strip() or hoy
+    try:
+        date.fromisoformat(d)
+    except ValueError:
+        d = db.DESDE_MOVIMIENTOS_CC
+    try:
+        date.fromisoformat(h)
+    except ValueError:
+        h = hoy
+    if d > h:
+        d, h = h, d
+    return d, h
+
+
+@app.get("/movimientos", response_class=HTMLResponse)
+def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
+                      error: str = ""):
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    try:
+        movs = db.movimientos_cc_en_rango(conn, d, h)
+    finally:
+        conn.close()
+    total_ing = sum(m["monto"] for m in movs if m["flujo"] == "Ingreso")
+    total_egr = sum(m["monto"] for m in movs if m["flujo"] == "Egreso")
+    return templates.TemplateResponse(
+        "movimientos_cc.html",
+        {
+            "request": request, "rut": client.rut,
+            "desde": d, "hasta": h, "movs": movs,
+            "total_ingresos": total_ing, "total_egresos": total_egr,
+            "neto": total_ing - total_egr, "error": error or None,
+        },
+    )
+
+
+@app.post("/movimientos/agregar")
+def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = Form(...),
+                        descripcion: str = Form(...), monto: str = Form(...),
+                        desde: str = Form(""), hasta: str = Form("")):
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    fecha = fecha.strip()
+    descripcion = descripcion.strip()
+    flujo = flujo.strip()
+    try:
+        monto_int = int(float(monto))
+    except (ValueError, TypeError):
+        monto_int = 0
+
+    def _error(msg: str) -> RedirectResponse:
+        return RedirectResponse(
+            f"/movimientos?desde={d}&hasta={h}&error={quote(msg)}", status_code=303
+        )
+
+    if flujo not in ("Ingreso", "Egreso"):
+        return _error("Tipo de movimiento inválido.")
+    if monto_int <= 0:
+        return _error("El monto debe ser mayor a cero.")
+    if not descripcion:
+        return _error("La descripción es obligatoria.")
+    try:
+        f_mov = date.fromisoformat(fecha)
+    except ValueError:
+        return _error("Fecha inválida.")
+    if f_mov > date.today():
+        return _error("No se permiten fechas futuras.")
+
+    conn = db.get_conn()
+    try:
+        db.agregar_movimiento_manual(conn, fecha, flujo, descripcion, monto_int)
+        conn.commit()
+    finally:
+        conn.close()
+    _log_evento(request, f"Movimiento CC agregado (manual) · {flujo} ${monto_int} el {fecha} · {descripcion}")
+    return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
+
+
+@app.post("/movimientos/{mid}/editar")
+def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
+                       flujo: str = Form(...), descripcion: str = Form(...),
+                       monto: str = Form(...), desde: str = Form(""), hasta: str = Form("")):
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    fecha = fecha.strip()
+    descripcion = descripcion.strip()
+    flujo = flujo.strip()
+    try:
+        monto_int = int(float(monto))
+    except (ValueError, TypeError):
+        monto_int = 0
+
+    def _error(msg: str) -> RedirectResponse:
+        return RedirectResponse(
+            f"/movimientos?desde={d}&hasta={h}&error={quote(msg)}", status_code=303
+        )
+
+    if flujo not in ("Ingreso", "Egreso"):
+        return _error("Tipo de movimiento inválido.")
+    if monto_int <= 0:
+        return _error("El monto debe ser mayor a cero.")
+    if not descripcion:
+        return _error("La descripción es obligatoria.")
+    try:
+        f_mov = date.fromisoformat(fecha)
+    except ValueError:
+        return _error("Fecha inválida.")
+    if f_mov > date.today():
+        return _error("No se permiten fechas futuras.")
+
+    conn = db.get_conn()
+    try:
+        ok = db.editar_movimiento_manual(conn, mid, fecha, flujo, descripcion, monto_int)
+        conn.commit()
+    finally:
+        conn.close()
+    if not ok:
+        return _error("Ese movimiento no se puede editar acá (no es manual).")
+    _log_evento(request, f"Movimiento CC editado (manual) id {mid} · {flujo} ${monto_int} el {fecha}")
+    return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
+
+
+@app.post("/movimientos/{mid}/eliminar")
+def movimientos_eliminar(request: Request, mid: int, desde: str = Form(""), hasta: str = Form("")):
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    try:
+        ok = db.eliminar_movimiento_manual(conn, mid)
+        conn.commit()
+    finally:
+        conn.close()
+    if ok:
+        _log_evento(request, f"Movimiento CC eliminado (manual) id {mid}")
+    return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
