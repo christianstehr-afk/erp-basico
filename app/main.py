@@ -1349,14 +1349,16 @@ def rendicion_eliminar(request: Request, rid: int):
 
 def _rango_movimientos(desde: str | None, hasta: str | None) -> tuple[str, str]:
     """Normaliza el rango de fechas de la pantalla de Movimientos CC.
-    Default: desde DESDE_MOVIMIENTOS_CC (todo lo disponible) hasta hoy."""
+    Default: mes actual (el filtro Desde/Hasta permite ampliarlo hasta
+    DESDE_MOVIMIENTOS_CC, todo lo disponible)."""
     hoy = date.today().isoformat()
-    d = (desde or "").strip() or db.DESDE_MOVIMIENTOS_CC
+    primer_dia_mes = date.today().replace(day=1).isoformat()
+    d = (desde or "").strip() or primer_dia_mes
     h = (hasta or "").strip() or hoy
     try:
         date.fromisoformat(d)
     except ValueError:
-        d = db.DESDE_MOVIMIENTOS_CC
+        d = primer_dia_mes
     try:
         date.fromisoformat(h)
     except ValueError:
@@ -1378,6 +1380,10 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
         movs = db.movimientos_cc_en_rango(conn, d, h)
     finally:
         conn.close()
+    # Orden por defecto en esta pantalla: fecha descendente (lo más reciente
+    # primero). movimientos_cc_en_rango() devuelve ascendente porque así lo
+    # necesita el cuadro del Cockpit; acá se invierte solo para mostrar.
+    movs = list(reversed(movs))
     total_ing = sum(m["monto"] for m in movs if m["flujo"] == "Ingreso")
     total_egr = sum(m["monto"] for m in movs if m["flujo"] == "Egreso")
     return templates.TemplateResponse(
