@@ -12,6 +12,12 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    .rnd-input{background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)}
+    .rnd-label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px}
+    .rnd-btn{background:var(--green);color:#fff;border:none;padding:11px 20px;border-radius:var(--radius);font-weight:700;font-size:13px;cursor:pointer}
+    .rnd-link-btn{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:11px 20px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700;background:none;cursor:pointer}
+  </style>
 </head>
 <body>
   <header class="topbar">
@@ -47,6 +53,22 @@
         <a href="/pagos/rendiciones/nueva"
            style="display:inline-block;background:var(--green);color:#fff;padding:10px 16px;border-radius:var(--radius);font-weight:700;font-size:13px">+ Agregar nueva rendición</a>
       </div>
+    </div>
+
+    <!-- Rango -->
+    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:22px;background:#0f0f0f">
+      <form method="get" action="/pagos/rendiciones" style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <label class="rnd-label">Desde</label>
+          <input type="date" name="desde" value="{{ desde }}" required class="rnd-input">
+        </div>
+        <div>
+          <label class="rnd-label">Hasta</label>
+          <input type="date" name="hasta" value="{{ hasta }}" required class="rnd-input">
+        </div>
+        <button type="submit" class="rnd-btn">Ver rendiciones</button>
+        <a href="/pagos/rendiciones/zip?desde={{ desde }}&hasta={{ hasta }}" class="rnd-link-btn">Descargar</a>
+      </form>
     </div>
 
     {% if filas %}

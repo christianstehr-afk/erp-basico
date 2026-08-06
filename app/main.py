@@ -1091,13 +1091,14 @@ def _render_rendicion(request: Request, client, rid: int,
 
 
 @app.get("/pagos/rendiciones", response_class=HTMLResponse)
-def rendiciones_lista(request: Request):
+def rendiciones_lista(request: Request, desde: str = "", hasta: str = ""):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
     conn = db.get_conn()
     try:
-        filas = db.listar_rendiciones(conn)
+        filas = db.rendiciones_en_rango(conn, d, h)
         total_monto = sum(f["total"] for f in filas)
         total_pendiente = sum(max(f["total"] - f["pagado"], 0) for f in filas)
     finally:
@@ -1106,9 +1107,40 @@ def rendiciones_lista(request: Request):
         "rendiciones_lista.html",
         {
             "request": request, "rut": client.rut, "filas": filas,
+            "desde": d, "hasta": h,
             "total_monto": total_monto, "total_pendiente": total_pendiente,
         },
     )
+
+
+@app.get("/pagos/rendiciones/zip")
+def rendiciones_zip(request: Request, desde: str = "", hasta: str = ""):
+    """Descarga un .zip con el PDF de cada rendición del rango (mismo filtro
+    que se ve en /pagos/rendiciones)."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    try:
+        filas = db.rendiciones_en_rango(conn, d, h)
+        rends = []
+        for r in filas:
+            rends.append({
+                "r": r,
+                "items": db.items_de_rendicion(conn, r["id"]),
+                "adjuntos": db.adjuntos_de_rendicion(conn, r["id"]),
+                "pagos": db.pagos_de_rendicion(conn, r["id"]),
+            })
+    finally:
+        conn.close()
+    if not rends:
+        return HTMLResponse(
+            "<p>No hay rendiciones en el rango seleccionado.</p>", status_code=404,
+        )
+    data = exportar.construir_zip_rendiciones(rends)
+    headers = {"Content-Disposition": f'attachment; filename="rendiciones_{d}_a_{h}.zip"'}
+    return Response(content=data, media_type="application/zip", headers=headers)
 
 
 @app.get("/pagos/rendiciones/nueva", response_class=HTMLResponse)

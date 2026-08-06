@@ -623,6 +623,23 @@ def listar_rendiciones(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def rendiciones_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> list[sqlite3.Row]:
+    """Igual que listar_rendiciones(), pero filtrando por la fecha propia de
+    la rendición (r.fecha), no por la fecha de sus pagos."""
+    return conn.execute(
+        """
+        SELECT r.id, r.nombre, r.fecha,
+               COALESCE((SELECT SUM(i.monto) FROM rendicion_items i WHERE i.rendicion_id = r.id), 0) AS total,
+               COALESCE((SELECT SUM(p.monto) FROM rendicion_pagos p WHERE p.rendicion_id = r.id), 0) AS pagado,
+               (SELECT COUNT(*) FROM rendicion_adjuntos a WHERE a.rendicion_id = r.id) AS n_adjuntos
+        FROM rendiciones r
+        WHERE r.fecha >= ? AND r.fecha <= ?
+        ORDER BY r.fecha DESC, r.id DESC
+        """,
+        (desde, hasta),
+    ).fetchall()
+
+
 def rendicion_por_id(conn: sqlite3.Connection, rid: int) -> sqlite3.Row | None:
     return conn.execute(
         """
