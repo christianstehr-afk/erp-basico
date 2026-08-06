@@ -607,14 +607,15 @@ def pagos_home(request: Request):
     return templates.TemplateResponse("pagos.html", {"request": request, "rut": client.rut})
 
 
-def _vista_lista(request: Request, seccion: str):
+def _vista_lista(request: Request, seccion: str, desde: str = "", hasta: str = ""):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
     cfg = SECCIONES[seccion]
+    d, h = _rango_movimientos(desde, hasta)
     conn = db.get_conn()
     try:
-        filas = db.facturas_con_pago(conn, tipo=cfg["tipo"])
+        filas = db.facturas_con_pago_en_rango(conn, tipo=cfg["tipo"], desde=d, hasta=h)
         # Los totales y el conteo del encabezado ignoran rechazadas y anuladas
         # (no se cobrarán/pagarán).
         vigentes = [f for f in filas if not f["fecha_reclamo"] and not f["anulada_por"]]
@@ -629,6 +630,7 @@ def _vista_lista(request: Request, seccion: str):
         {
             "request": request, "rut": client.rut, "anio": ANIO,
             "seccion": seccion, "cfg": cfg, "filas": filas,
+            "desde": d, "hasta": h,
             "n_vigentes": len(vigentes), "n_rechazadas": n_rechazadas,
             "n_anuladas": n_anuladas,
             "total_monto": total_monto, "total_pendiente": total_pendiente,
@@ -906,8 +908,8 @@ def _eliminar_adjunto_factura(request: Request, seccion: str, codigo: str, adj_i
 # ---- Pago a proveedores (facturas recibidas) ----
 
 @app.get("/pagos/proveedores", response_class=HTMLResponse)
-def proveedores_lista(request: Request):
-    return _vista_lista(request, "proveedores")
+def proveedores_lista(request: Request, desde: str = "", hasta: str = ""):
+    return _vista_lista(request, "proveedores", desde, hasta)
 
 
 @app.get("/pagos/proveedores/{codigo}", response_class=HTMLResponse)
@@ -964,8 +966,8 @@ def proveedores_eliminar_adjunto(request: Request, codigo: str, adj_id: int):
 # ---- Ingresos (facturas emitidas) ----
 
 @app.get("/pagos/ingresos", response_class=HTMLResponse)
-def ingresos_lista(request: Request):
-    return _vista_lista(request, "ingresos")
+def ingresos_lista(request: Request, desde: str = "", hasta: str = ""):
+    return _vista_lista(request, "ingresos", desde, hasta)
 
 
 @app.get("/pagos/ingresos/{codigo}", response_class=HTMLResponse)

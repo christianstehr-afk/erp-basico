@@ -439,6 +439,26 @@ def facturas_con_pago(conn: sqlite3.Connection, tipo: str = "compra") -> list[sq
     ).fetchall()
 
 
+def facturas_con_pago_en_rango(conn: sqlite3.Connection, tipo: str, desde: str, hasta: str) -> list[sqlite3.Row]:
+    """Igual que facturas_con_pago(), pero filtrando por la fecha de emisión
+    de la factura (f.fecha_emision), no por la fecha de sus pagos."""
+    marcadores = ",".join("?" * len(TIPOS_NO_PAGABLES))
+    return conn.execute(
+        f"""
+        SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
+               f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo,
+               f.pdf_path, f.descripcion, f.anulada_por,
+               COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
+        FROM facturas f
+        WHERE f.tipo = ?
+          AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
+          AND f.fecha_emision >= ? AND f.fecha_emision <= ?
+        ORDER BY f.fecha_pago_tope IS NULL, f.fecha_pago_tope ASC, f.folio DESC
+        """,
+        (tipo, *TIPOS_NO_PAGABLES, desde, hasta),
+    ).fetchall()
+
+
 def factura_pago_por_codigo(conn: sqlite3.Connection, codigo: str) -> sqlite3.Row | None:
     """Una factura por su codigo_sii con el total pagado agregado."""
     return conn.execute(

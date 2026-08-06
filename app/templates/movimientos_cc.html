@@ -54,23 +54,6 @@
     </div>
     {% endif %}
 
-    <!-- Rango -->
-    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:22px;background:#0f0f0f">
-      <form method="get" action="/movimientos" style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
-        <div>
-          <label class="mcc-label">Desde</label>
-          <input type="date" name="desde" id="rango-desde" value="{{ desde }}" required class="mcc-input">
-        </div>
-        <div>
-          <label class="mcc-label">Hasta</label>
-          <input type="date" name="hasta" id="rango-hasta" value="{{ hasta }}" required class="mcc-input">
-        </div>
-        <button type="submit" class="mcc-btn">Ver movimientos</button>
-        <a href="/movimientos/pdf?desde={{ desde }}&hasta={{ hasta }}" target="_blank"
-           class="mcc-link-btn" style="padding:11px 20px">Ver PDF</a>
-      </form>
-    </div>
-
     <!-- Agregar movimiento manual -->
     <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:22px;background:#0f0f0f">
       <div class="eyebrow" style="margin-bottom:14px">+ Agregar movimiento manual</div>
@@ -97,6 +80,23 @@
           <input type="number" name="monto" min="1" step="1" required class="mcc-input" style="width:140px">
         </div>
         <button type="submit" class="mcc-btn">Agregar</button>
+      </form>
+    </div>
+
+    <!-- Rango -->
+    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:22px;background:#0f0f0f">
+      <form method="get" action="/movimientos" style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <label class="mcc-label">Desde</label>
+          <input type="date" name="desde" id="rango-desde" value="{{ desde }}" required class="mcc-input">
+        </div>
+        <div>
+          <label class="mcc-label">Hasta</label>
+          <input type="date" name="hasta" id="rango-hasta" value="{{ hasta }}" required class="mcc-input">
+        </div>
+        <button type="submit" class="mcc-btn">Ver movimientos</button>
+        <a href="/movimientos/pdf?desde={{ desde }}&hasta={{ hasta }}" target="_blank"
+           class="mcc-link-btn" style="padding:11px 20px">Ver PDF</a>
       </form>
     </div>
 

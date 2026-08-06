@@ -12,6 +12,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    .pgl-input{background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)}
+    .pgl-label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px}
+    .pgl-btn{background:var(--green);color:#fff;border:none;padding:11px 20px;border-radius:var(--radius);font-weight:700;font-size:13px;cursor:pointer}
+  </style>
 </head>
 <body>
   <header class="topbar">
@@ -45,6 +50,21 @@
         <span style="color:#3b82f6">● Pendiente</span>
         {% if seccion == 'ingresos' %}&nbsp;&nbsp;<span style="color:var(--red)">● Rechazada</span>&nbsp;&nbsp;<span style="color:var(--green)">● Anulada</span>{% endif %}
       </p>
+    </div>
+
+    <!-- Rango -->
+    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:22px;background:#0f0f0f">
+      <form method="get" action="/pagos/{{ seccion }}" style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <label class="pgl-label">Desde</label>
+          <input type="date" name="desde" value="{{ desde }}" required class="pgl-input">
+        </div>
+        <div>
+          <label class="pgl-label">Hasta</label>
+          <input type="date" name="hasta" value="{{ hasta }}" required class="pgl-input">
+        </div>
+        <button type="submit" class="pgl-btn">Ver</button>
+      </form>
     </div>
 
     <div style="overflow:auto;border:1px solid #1c1c1c;border-radius:var(--radius)">
