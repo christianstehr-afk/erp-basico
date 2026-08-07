@@ -608,6 +608,29 @@ def set_centro_costo(conn: sqlite3.Connection, codigo: str, centro: str | None) 
     )
 
 
+def asignar_centro_por_rut(conn: sqlite3.Connection, tipo: str, rut: str, centro: str) -> int:
+    """Imputa TODAS las facturas de `tipo` ('compra'/'venta') de un RUT
+    contraparte al mismo centro de resultado. Pensado para carga masiva
+    (ver POST /admin/asignar-centro) cuando un proveedor o cliente entero
+    corresponde siempre a la misma línea/categoría (p. ej. el TAG o el GPS
+    de la flota mu-EVT), en vez de imputar factura por factura en la app.
+
+    Como con set_centro_costo(), asignar un centro único borra cualquier
+    distribución en varios centros que esas facturas tuvieran. Devuelve la
+    cantidad de facturas afectadas.
+    """
+    cur = conn.execute(
+        "UPDATE facturas SET centro_costo = ? WHERE tipo = ? AND rut_contraparte = ?",
+        (centro, tipo, rut),
+    )
+    conn.execute(
+        "DELETE FROM factura_centros WHERE factura_id IN "
+        "(SELECT id FROM facturas WHERE tipo = ? AND rut_contraparte = ?)",
+        (tipo, rut),
+    )
+    return cur.rowcount
+
+
 def centros_de_factura(conn: sqlite3.Connection, factura_id: int) -> list[sqlite3.Row]:
     """Distribución de una factura en varios centros (vacío si no está
     distribuida: en ese caso manda su centro_costo simple)."""

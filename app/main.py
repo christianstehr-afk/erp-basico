@@ -2175,6 +2175,68 @@ async def admin_import_adjunto(request: Request, rendicion_id: int = Form(...),
     return JSONResponse({"ok": True})
 
 
+@app.post("/admin/asignar-centro")
+def admin_asignar_centro(secret: str = Form(...), tipo: str = Form(...),
+                         centro: str = Form(...), ruts: str = Form(...)):
+    """Carga masiva: imputa TODAS las facturas de uno o más RUTs contraparte
+    al mismo centro de resultado, sin pasar por la app factura por factura.
+    Pensado para casos como "todo lo que llega de este proveedor de TAG/GPS
+    es siempre MUE-OPE" (ver también /pagos/{seccion}/{codigo}/centro para
+    imputar una sola factura, y /distribucion para repartirla en varias).
+
+    `tipo`: 'compra' (recibidas / Pago a Proveedores) o 'venta' (emitidas /
+    Ingresos). `centro`: código "LINEA-CAT" del catálogo (ver centros.py),
+    debe ser válido para el flujo de `tipo` (gasto para compra, ingreso para
+    venta). `ruts`: uno o más RUT separados por coma, salto de línea o
+    espacio; duplicados se ignoran.
+    """
+    if not _admin_guard(secret):
+        return Response(status_code=404)
+    tipo = (tipo or "").strip()
+    if tipo not in ("compra", "venta"):
+        return JSONResponse({"ok": False, "error": "tipo debe ser 'compra' o 'venta'"}, status_code=400)
+    centro_norm = (centro or "").strip().upper()
+    flujo = "gasto" if tipo == "compra" else "ingreso"
+    if not centros.es_valido(centro_norm, flujo):
+        return JSONResponse(
+            {"ok": False, "error": f"centro inválido para tipo={tipo} (flujo={flujo}): {centro_norm}"},
+            status_code=400,
+        )
+    lista_ruts = sorted(set(r.strip() for r in re.split(r"[,\s]+", ruts) if r.strip()))
+    if not lista_ruts:
+        return JSONResponse({"ok": False, "error": "no se recibió ningún RUT"}, status_code=400)
+
+    resultado = {}
+    conn = db.get_conn()
+    try:
+        for rut in lista_ruts:
+            resultado[rut] = db.asignar_centro_por_rut(conn, tipo, rut, centro_norm)
+        conn.commit()
+    finally:
+        conn.close()
+    total = sum(resultado.values())
+    sin_match = [r for r, n in resultado.items() if n == 0]
+    # No hay `request` (es una llamada de administración, sin sesión SII): se
+    # registra el log con una conexión propia en vez de _log_evento (que
+    # necesita un Request para identificar al usuario).
+    conn = db.get_conn()
+    try:
+        db.registrar_log(
+            conn,
+            f"Asignación masiva de centro (admin) · tipo={tipo} · centro={centro_norm} · "
+            f"{total} factura(s) en {len(lista_ruts)} RUT(s)"
+            + (f" · sin coincidencias: {', '.join(sin_match)}" if sin_match else ""),
+            usuario="admin-script",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse({
+        "ok": True, "tipo": tipo, "centro": centro_norm,
+        "total_facturas": total, "por_rut": resultado, "sin_coincidencias": sin_match,
+    })
+
+
 @app.post("/logout")
 def logout(request: Request):
     sid = request.session.get("sid")
