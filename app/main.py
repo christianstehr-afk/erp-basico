@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import centros, db, exportar, sii_bhe, sii_docs, sync
+from . import centros, db, exportar, pdf_store, sii_bhe, sii_docs, sync
 from .sii_client import SIIAuthError, SIIClient, SIISessionExpirada
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -435,12 +435,29 @@ def _factura_por_codigo(codigo: str):
     conn = db.get_conn()
     try:
         return conn.execute(
-            "SELECT documento, folio, razon_social, rut_contraparte, tipo, pdf_href_bhe "
+            "SELECT documento, folio, razon_social, rut_contraparte, tipo, pdf_href_bhe, "
+            "pdf_path, fecha_emision "
             "FROM facturas WHERE codigo_sii = ?",
             (codigo,),
         ).fetchone()
     finally:
         conn.close()
+
+
+def _cachear_pdf(codigo: str, tipo: str, fecha: str | None, data: bytes) -> None:
+    """Guarda en el almacén permanente (pdf_store) un PDF recién bajado del
+    SII al servirlo (cache-on-view): la próxima vez sale de disco sin esperar
+    al SII. Complementa la precarga del sync (que baja lo que falte en
+    background); nunca hace fallar la respuesta al usuario."""
+    try:
+        conn = db.get_conn()
+        try:
+            if pdf_store.guardar(conn, codigo, tipo, fecha, data):
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 _MSG_BHE_SIN_SESION = (
@@ -499,6 +516,14 @@ def pdf_ver(request: Request, codigo: str):
     if not row:
         return Response("PDF no disponible", status_code=404)
 
+    # Copia local primero (precargada por el sync, o cacheada en una vista
+    # anterior): responde al instante, sin la latencia variable del SII.
+    # Para boletas tiene un plus: el PDF guardado se sirve aunque no haya
+    # sesión "empresa" activa.
+    data = pdf_store.leer(row["pdf_path"])
+    if data:
+        return Response(content=data, media_type="application/pdf")
+
     # Boletas de honorarios: PDF distinto, con la sesión "empresa" (no la
     # personal) y el href guardado al parsear el mes (ver sii_bhe.py).
     if codigo.startswith("BHE-"):
@@ -514,6 +539,7 @@ def pdf_ver(request: Request, codigo: str):
             return _html_bhe_sin_sesion()
         if not data:
             return Response("No se pudo obtener el PDF de la boleta desde el SII. Intenta de nuevo.", status_code=502)
+        _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
         return Response(content=data, media_type="application/pdf")
 
     fuente = _FUENTE_POR_TIPO.get(row["tipo"])
@@ -526,6 +552,7 @@ def pdf_ver(request: Request, codigo: str):
     data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
     if not data:
         return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
+    _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
     # Sin filename => se muestra embebido (inline) en el visor
     return Response(content=data, media_type="application/pdf")
 
@@ -538,6 +565,14 @@ def pdf_descargar(request: Request, codigo: str):
     row = _factura_por_codigo(codigo)
     if not row:
         return Response("PDF no disponible", status_code=404)
+
+    # Copia local primero (ver nota en /pdf/{codigo}/ver).
+    data = pdf_store.leer(row["pdf_path"])
+    if data:
+        return Response(
+            content=data, media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{_nombre_pdf(row)}"'},
+        )
 
     if codigo.startswith("BHE-"):
         client_bhe = _current_client_bhe(request)
@@ -552,6 +587,7 @@ def pdf_descargar(request: Request, codigo: str):
             return _html_bhe_sin_sesion()
         if not data:
             return Response("No se pudo obtener el PDF de la boleta desde el SII. Intenta de nuevo.", status_code=502)
+        _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
         return Response(
             content=data, media_type="application/pdf",
             headers={"Content-Disposition": f'attachment; filename="{_nombre_pdf(row)}"'},
@@ -564,6 +600,7 @@ def pdf_descargar(request: Request, codigo: str):
     data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
     if not data:
         return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
+    _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
     # Con filename => Content-Disposition attachment => fuerza la descarga
     return Response(
         content=data, media_type="application/pdf",
@@ -717,24 +754,28 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
     finally:
         conn.close()
 
-    # El documento original vive solo en el SII (no se guarda copia local);
-    # se obtiene con la sesión activa del usuario, igual que /pdf/{codigo}/ver.
-    # Si la sesión expiró o el SII no responde, igual se devuelve el PDF de
-    # gestión (sin el original) en vez de fallar. Las boletas de honorarios
-    # usan la sesión "empresa" y su propio href guardado al sincronizar.
-    factura_bytes = None
-    if codigo.startswith("BHE-"):
-        client_bhe = _current_client_bhe(request)
-        if client_bhe:
-            try:
-                factura_bytes = sii_bhe.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bhe"])
-            except sii_bhe.BHEError:
-                factura_bytes = None
-    else:
-        fuente = _FUENTE_POR_TIPO.get(cfg["tipo"])
-        if fuente:
-            # Ya no lanza SIISessionExpirada; None si no se pudo obtener.
-            factura_bytes = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+    # Documento original: primero la copia local permanente (precargada por
+    # el sync o cacheada en una vista anterior, ver pdf_store) y solo si no
+    # está, descarga en vivo del SII (guardándola de una vez para la
+    # próxima). Si tampoco se pudo, igual se devuelve el PDF de gestión (sin
+    # el original) en vez de fallar. Las boletas de honorarios usan la sesión
+    # "empresa" y su propio href guardado al sincronizar.
+    factura_bytes = pdf_store.leer(f["pdf_path"])
+    if factura_bytes is None:
+        if codigo.startswith("BHE-"):
+            client_bhe = _current_client_bhe(request)
+            if client_bhe:
+                try:
+                    factura_bytes = sii_bhe.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bhe"])
+                except sii_bhe.BHEError:
+                    factura_bytes = None
+        else:
+            fuente = _FUENTE_POR_TIPO.get(cfg["tipo"])
+            if fuente:
+                # Ya no lanza SIISessionExpirada; None si no se pudo obtener.
+                factura_bytes = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+        if factura_bytes:
+            _cachear_pdf(codigo, cfg["tipo"], f["fecha_emision"], factura_bytes)
 
     data = exportar._pdf_de_gestion_pago(
         f, pagos, cfg,

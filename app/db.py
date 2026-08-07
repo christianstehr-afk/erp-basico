@@ -493,6 +493,22 @@ def pendientes_de_pdf(conn: sqlite3.Connection, tipo: str = "compra") -> list[st
     return [r[0] for r in cur.fetchall()]
 
 
+def facturas_para_precarga_pdf(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Todos los documentos con codigo_sii (facturas recibidas, emitidas y
+    boletas BHE), con lo necesario para decidir si su PDF ya está guardado y,
+    si no, descargarlo (ver sync._precargar_pdfs). No filtra por pdf_path a
+    propósito: aunque la BD diga que hay copia, el archivo puede no existir
+    en este disco (p. ej. una BD migrada de otra máquina) y en ese caso hay
+    que volver a bajarlo — el chequeo real es contra el disco, en el sync.
+    Más recientes primero: son los PDF que más probablemente se van a abrir.
+    """
+    return conn.execute(
+        "SELECT codigo_sii, tipo, fecha_emision, pdf_path, pdf_href_bhe "
+        "FROM facturas WHERE codigo_sii IS NOT NULL AND codigo_sii != '' "
+        "ORDER BY fecha_emision DESC"
+    ).fetchall()
+
+
 # ---------------------------------------------------------------------------
 # Módulo 4 · Pago a proveedores (facturas recibidas, tipo='compra')
 # ---------------------------------------------------------------------------
@@ -692,7 +708,7 @@ def notas_credito_sin_procesar(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Notas de crédito emitidas cuyo PDF aún no se revisó buscando la
     referencia de anulación."""
     return conn.execute(
-        "SELECT codigo_sii, folio, rut_contraparte FROM facturas "
+        "SELECT codigo_sii, folio, rut_contraparte, fecha_emision, pdf_path FROM facturas "
         "WHERE tipo = 'venta' AND tipo_dte = 61 AND codigo_sii IS NOT NULL "
         "AND (ref_procesada IS NULL OR ref_procesada = 0)"
     ).fetchall()

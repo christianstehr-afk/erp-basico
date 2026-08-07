@@ -5,15 +5,19 @@ recibidas y emitidas nuevas.
 Se ejecuta al iniciar sesión (y puede dispararse manualmente). El guardado de
 metadatos es rápido y sincrónico.
 
-Los PDF ya NO se descargan ni se guardan en disco durante el sync: se piden
-al SII al momento de verlos, con la sesión activa del usuario (ver
-GET /pdf/{codigo}/ver en main.py, que usa sii_docs.obtener_pdf_bytes).
+Los PDF se PRECARGAN al final de cada sync (decisión 2026-08-07, revirtiendo
+la descarga al vuelo que resultó lenta: el SII tarda entre 3 y >45 s por
+documento): se descargan en background los que aún no tengan copia local y se
+guardan PERMANENTES en pdf_store (volumen /data en Railway). Los syncs
+siguientes solo bajan lo nuevo. Ver _precargar_pdfs; el visor en main.py
+sirve desde disco y solo cae al SII si un PDF aún no está (y ahí también lo
+guarda, cache-on-view).
 """
 from __future__ import annotations
 
 import threading
 
-from . import db, sii_bhe, sii_docs, sii_rcv
+from . import db, pdf_store, sii_bhe, sii_docs, sii_rcv
 from .sii_client import SIIClient, SIISessionExpirada
 
 # Estado simple de sincronización (para mostrar en el panel)
@@ -33,6 +37,11 @@ estado_sync: dict = {
     # Un problema ahí NUNCA bloquea el sync de facturas: se guarda acá y el
     # panel lo muestra como aviso, no como error duro.
     "boletas_error": None,
+    # Progreso de la precarga de PDFs (el dashboard ya sabe pintar una barra
+    # con porcentaje real cuando pdf_total > 0; ver dashboard.html).
+    "pdf_total": 0,
+    "pdf_hechos": 0,
+    "pdf_fallidos": 0,
 }
 
 
@@ -69,7 +78,8 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
 
     Devuelve un resumen con cuántos documentos se trajeron de cada tipo.
     """
-    estado_sync.update(corriendo=True, error=None, fase="Consultando SII…", sesion_perdida=False)
+    estado_sync.update(corriendo=True, error=None, fase="Consultando SII…", sesion_perdida=False,
+                       pdf_total=0, pdf_hechos=0, pdf_fallidos=0)
     anios = _anios_a_sincronizar(anio, desde)
     try:
         recibidos: list[dict] = []
@@ -129,10 +139,17 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         if pendientes_nc:
             estado_sync["fase"] = "Revisando notas de crédito…"
             for nc in pendientes_nc:
-                try:
-                    pdf_bytes = sii_docs.obtener_pdf_bytes(client.session, "emitidos", nc["codigo_sii"])
-                except Exception:
-                    pdf_bytes = None
+                # Copia local primero (si ya se precargó en un sync anterior);
+                # si no está, se baja del SII y se guarda de una vez.
+                pdf_bytes = pdf_store.leer(nc["pdf_path"])
+                if not pdf_bytes:
+                    try:
+                        pdf_bytes = sii_docs.obtener_pdf_bytes(client.session, "emitidos", nc["codigo_sii"])
+                    except Exception:
+                        pdf_bytes = None
+                    if pdf_bytes:
+                        pdf_store.guardar(conn, nc["codigo_sii"], "venta",
+                                          nc["fecha_emision"], pdf_bytes)
                 if not pdf_bytes:
                     continue  # falla de descarga: reintenta en el próximo sync
                 folio_ref = sii_docs.folio_anulado_en_nc(pdf_bytes)
@@ -176,6 +193,13 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
     finally:
         conn.close()
 
+    # Precarga de PDFs: baja y guarda (permanente, ver pdf_store) los PDF de
+    # facturas y boletas que aún no tengan copia local. Incremental: en el
+    # primer sync los baja todos; en los siguientes, solo los documentos
+    # nuevos. Nunca hace fallar el sync: lo que no se pudo bajar queda
+    # pendiente y se reintenta en el próximo.
+    _precargar_pdfs(client, client_bhe)
+
     estado_sync["fase"] = "Listo"
     estado_sync["corriendo"] = False
 
@@ -186,6 +210,62 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         "total_emitidas": estado_sync["emitidas"],
         "total_boletas": estado_sync["boletas"],
     }
+
+
+def _precargar_pdfs(client: SIIClient, client_bhe: SIIClient | None) -> None:
+    """Descarga y guarda los PDF de todos los documentos sin copia local.
+
+    · Qué falta se decide contra el DISCO (pdf_store.tiene_copia), no contra
+      pdf_path: si la BD trae rutas de otra máquina o el archivo se perdió,
+      se vuelve a bajar.
+    · Un commit por PDF: el avance queda confirmado aunque el proceso muera
+      a mitad de la cola (el próximo sync retoma donde quedó), y las
+      transacciones cortas no bloquean a un usuario navegando la app.
+    · Boletas (BHE-*) requieren la sesión "empresa": si no vino client_bhe o
+      la boleta no trae su código de barras (pdf_href_bhe), quedan como
+      fallidas para reintentar en el próximo sync.
+    · El progreso real (pdf_hechos/pdf_total) se publica en estado_sync y el
+      dashboard lo pinta como barra con porcentaje.
+    """
+    conn = db.get_conn()
+    try:
+        filas = db.facturas_para_precarga_pdf(conn)
+        pendientes = [f for f in filas if not pdf_store.tiene_copia(f["pdf_path"])]
+        estado_sync.update(pdf_total=len(pendientes), pdf_hechos=0, pdf_fallidos=0)
+        if not pendientes:
+            return
+        estado_sync["fase"] = "Descargando PDFs…"
+        nuevos = 0
+        for f in pendientes:
+            codigo = f["codigo_sii"]
+            data = None
+            try:
+                if codigo.startswith("BHE-"):
+                    if client_bhe is not None and f["pdf_href_bhe"]:
+                        data = sii_bhe.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bhe"])
+                else:
+                    fuente = "recibidos" if f["tipo"] == "compra" else "emitidos"
+                    data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
+            except Exception:
+                # BHEError, timeout, etc.: falla puntual de ESTE documento;
+                # nunca aborta la cola ni invalida sesiones.
+                data = None
+            if data and pdf_store.guardar(conn, codigo, f["tipo"], f["fecha_emision"], data):
+                conn.commit()
+                nuevos += 1
+            else:
+                estado_sync["pdf_fallidos"] += 1
+            estado_sync["pdf_hechos"] += 1
+        if nuevos or estado_sync["pdf_fallidos"]:
+            db.registrar_log(
+                conn,
+                f"Precarga de PDFs: {nuevos} guardado(s), "
+                f"{estado_sync['pdf_fallidos']} pendiente(s) de reintento",
+                usuario="sync",
+            )
+            conn.commit()
+    finally:
+        conn.close()
 
 
 def sincronizar_async(client: SIIClient, anio: int = 2026, desde: str | None = None,
