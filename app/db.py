@@ -1689,35 +1689,95 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
     filas: list[dict] = []
 
     if base == "caja":
+        # OJO: hay que leer movimientos_cc directo (igual que _movs_caja_con_centros,
+        # que es lo que arma el gráfico agregado), NO movimientos_en_rango(): esa
+        # función solo sale de pagos/rendicion_pagos y se salta los movimientos
+        # manuales (origen='manual'), que sí tienen su propio centro_costo y sí
+        # cuentan en el agregado. Antes esto hacía que un movimiento manual
+        # imputado (p. ej. un pago de crédito en FIN) apareciera en la barra del
+        # gráfico pero el clic mostrara "sin documentos, total cero".
         tipo_mov = "Ingreso" if flujo == "ingreso" else "Egreso"
-        for m in movimientos_en_rango(conn, d1, d2):
-            if m["flujo"] != tipo_mov:
-                continue
-            monto = sum(v for c, v in m["centros_detalle"] if _matches_filtro(c, linea, categoria, cats))
+        filas_mov = conn.execute(
+            """
+            SELECT m.fecha AS fecha, m.monto AS monto, m.origen AS origen,
+                   m.descripcion AS descripcion, m.centro_costo AS centro_manual,
+                   p.factura_id AS factura_id, f.total AS ftotal, f.centro_costo AS fcentro,
+                   f.codigo_sii AS codigo_sii, f.documento AS documento, f.folio AS folio,
+                   f.razon_social AS razon_social, f.rut_contraparte AS rut_contraparte,
+                   f.estado AS estado, rp.rendicion_id AS rendicion_id
+            FROM movimientos_cc m
+            LEFT JOIN pagos p ON p.id = m.pago_id
+            LEFT JOIN facturas f ON f.id = p.factura_id
+            LEFT JOIN rendicion_pagos rp ON rp.id = m.rendicion_pago_id
+            WHERE m.fecha >= ? AND m.fecha <= ? AND m.flujo = ?
+            """,
+            (d1, d2, tipo_mov),
+        ).fetchall()
+        ids_fact = {r["factura_id"] for r in filas_mov if r["factura_id"]}
+        distrib: dict[int, list[tuple[str, int]]] = {}
+        if ids_fact:
+            marcadores = ",".join("?" * len(ids_fact))
+            for r in conn.execute(
+                f"SELECT factura_id, centro, monto FROM factura_centros WHERE factura_id IN ({marcadores})",
+                tuple(ids_fact),
+            ).fetchall():
+                distrib.setdefault(r["factura_id"], []).append((r["centro"], r["monto"]))
+        ids_rend = {r["rendicion_id"] for r in filas_mov if r["rendicion_id"]}
+        items_rend: dict[int, dict[str, int]] = {}
+        nombres_rend: dict[int, str] = {}
+        if ids_rend:
+            marcadores = ",".join("?" * len(ids_rend))
+            for r in conn.execute(
+                f"SELECT rendicion_id, centro_costo, monto FROM rendicion_items WHERE rendicion_id IN ({marcadores})",
+                tuple(ids_rend),
+            ).fetchall():
+                g = items_rend.setdefault(r["rendicion_id"], {})
+                c = r["centro_costo"] or ""
+                g[c] = g.get(c, 0) + (r["monto"] or 0)
+            for r in conn.execute(
+                f"SELECT id, nombre FROM rendiciones WHERE id IN ({marcadores})", tuple(ids_rend)
+            ).fetchall():
+                nombres_rend[r["id"]] = r["nombre"]
+
+        for m in filas_mov:
+            monto_mov = m["monto"] or 0
+            ref_total = monto_mov
+            if m["factura_id"]:
+                d = distrib.get(m["factura_id"])
+                if d:
+                    ref_total = m["ftotal"] or sum(x for _, x in d)
+                    detalle = _prorratear(d, ref_total, monto_mov)
+                else:
+                    detalle = [((m["fcentro"] or ""), monto_mov)]
+            elif m["rendicion_id"]:
+                g = items_rend.get(m["rendicion_id"], {})
+                ref_total = sum(g.values())
+                detalle = _prorratear(list(g.items()), ref_total, monto_mov) if ref_total else [("", monto_mov)]
+            else:
+                detalle = [((m["centro_manual"] or ""), monto_mov)]
+
+            monto = sum(v for c, v in detalle if _matches_filtro(c, linea, categoria, cats))
             if not monto:
                 continue
+
             documento = folio = contraparte = rut = estado = codigo_sii = rendicion_id = None
-            monto_total = m["monto"]
-            if m["origen"] == "factura":
-                f = conn.execute(
-                    "SELECT documento, folio, razon_social, rut_contraparte, estado, total "
-                    "FROM facturas WHERE codigo_sii = ?", (m["ref"],),
-                ).fetchone()
-                if f:
-                    documento, folio = f["documento"], f["folio"]
-                    contraparte, rut, estado = f["razon_social"], f["rut_contraparte"], f["estado"]
-                    monto_total = f["total"]
-                codigo_sii = m["ref"]
-            elif m["origen"] == "rendicion":
-                r = conn.execute("SELECT nombre FROM rendiciones WHERE id = ?", (m["ref"],)).fetchone()
-                documento = f"Rendición {codigo_rendicion(m['ref'])}"
-                contraparte = r["nombre"] if r else None
-                rendicion_id = m["ref"]
+            monto_total = monto_mov
+            if m["factura_id"]:
+                documento, folio = m["documento"], m["folio"]
+                contraparte, rut, estado = m["razon_social"], m["rut_contraparte"], m["estado"]
+                monto_total = m["ftotal"] or monto_mov
+                codigo_sii = m["codigo_sii"]
+            elif m["rendicion_id"]:
+                documento = f"Rendición {codigo_rendicion(m['rendicion_id'])}"
+                contraparte = nombres_rend.get(m["rendicion_id"])
+                rendicion_id = m["rendicion_id"]
             else:
                 documento = m["descripcion"] or "Movimiento manual"
+
             filas.append({
                 "fecha": m["fecha"], "documento": documento or m["descripcion"], "folio": folio,
-                "contraparte": contraparte, "rut": rut, "centro": m["centro"] or "Sin imputar",
+                "contraparte": contraparte, "rut": rut,
+                "centro": _etiqueta_centro(detalle, ref_total),
                 "monto": monto, "monto_total": monto_total, "estado": estado,
                 "codigo_sii": codigo_sii, "rendicion_id": rendicion_id, "origen": m["origen"],
             })
