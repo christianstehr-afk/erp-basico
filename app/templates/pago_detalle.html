@@ -146,8 +146,12 @@
         <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/distribucion">
           <div id="filas-distribucion" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-            <button type="button" onclick="agregarFilaDistribucion()"
-              style="background:none;border:1px solid #2b2b2b;color:var(--snow);padding:7px 12px;border-radius:var(--radius);font-size:12px">+ Agregar fila</button>
+            <div style="display:flex;gap:8px">
+              <button type="button" onclick="agregarFilaDistribucion()"
+                style="background:none;border:1px solid #2b2b2b;color:var(--snow);padding:7px 12px;border-radius:var(--radius);font-size:12px">+ Agregar fila</button>
+              <button type="button" onclick="completarSaldoDistribucion()" title="Rellena la última fila con lo que falta para llegar al total"
+                style="background:none;border:1px solid #2b2b2b;color:var(--green);padding:7px 12px;border-radius:var(--radius);font-size:12px">Completar saldo</button>
+            </div>
             <span id="suma-distribucion" style="font-family:var(--mono);font-size:12px"></span>
           </div>
           <div style="display:flex;gap:10px;margin-top:14px">
@@ -402,6 +406,24 @@
 
       window.agregarFilaDistribucion = function () {
         document.getElementById("filas-distribucion").appendChild(fila());
+        recalcular();
+      };
+      window.completarSaldoDistribucion = function () {
+        // Rellena la ÚLTIMA fila con lo que falta para llegar al total,
+        // sumando el resto de las filas (así no hay que restar a mano).
+        var filas = document.querySelectorAll("#filas-distribucion > div");
+        if (filas.length === 0) return;
+        var ultima = filas[filas.length - 1];
+        var suma = 0;
+        filas.forEach(function (f, i) {
+          if (f === ultima) return;
+          suma += parseFloat((f.querySelector(".fd-monto") || {}).value) || 0;
+        });
+        var saldo = Math.max(TOTAL - suma, 0);
+        var montoUltimo = ultima.querySelector(".fd-monto");
+        var pctUltimo = ultima.querySelector(".fd-pct");
+        montoUltimo.value = saldo;
+        pctUltimo.value = TOTAL > 0 ? Math.round(saldo / TOTAL * 100) : 0;
         recalcular();
       };
       window.abrirDistribucion = function () {
