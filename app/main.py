@@ -612,12 +612,22 @@ def pagos_home(request: Request):
     return templates.TemplateResponse("pagos.html", {"request": request, "rut": client.rut})
 
 
-def _vista_lista(request: Request, seccion: str, desde: str = "", hasta: str = ""):
+def _vista_lista(request: Request, seccion: str, desde: str = "", hasta: str = "",
+                 volver: str = ""):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
     cfg = SECCIONES[seccion]
+    # Memoria del filtro: al volver desde "Gestionar" (?volver=1) se restaura
+    # el rango con que se estaba mirando la lista. Entrar directo (Cockpit)
+    # llega sin `volver` y usa el default de siempre: el mes en curso.
+    clave_filtro = f"filtro_pagos_{seccion}"
+    if (volver or "").strip() and not (desde.strip() or hasta.strip()):
+        guardado = request.session.get(clave_filtro) or []
+        if isinstance(guardado, (list, tuple)) and len(guardado) == 2:
+            desde, hasta = guardado[0] or "", guardado[1] or ""
     d, h = _rango_movimientos(desde, hasta)
+    request.session[clave_filtro] = [d, h]
     conn = db.get_conn()
     try:
         filas = db.facturas_con_pago_en_rango(conn, tipo=cfg["tipo"], desde=d, hasta=h)
@@ -653,7 +663,7 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
             return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
         if f["anulada_por"]:
             # Anulada por una NC: no hay nada que gestionar aquí.
-            return RedirectResponse(f"/pagos/{seccion}", status_code=303)
+            return RedirectResponse(f"/pagos/{seccion}?volver=1", status_code=303)
         pagos = db.pagos_de_factura(conn, f["id"])
         adjuntos = db.adjuntos_de_factura(conn, f["id"])
         rendiciones = []
@@ -813,7 +823,7 @@ def _agregar_movimiento(request: Request, seccion: str, codigo: str,
         if not f:
             return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
         if f["anulada_por"]:
-            return RedirectResponse(f"/pagos/{seccion}", status_code=303)
+            return RedirectResponse(f"/pagos/{seccion}?volver=1", status_code=303)
         if f["fecha_reclamo"]:
             return _render_detalle(request, client, seccion, codigo,
                                    error="La factura está rechazada; no admite movimientos.",
@@ -902,7 +912,7 @@ def _agregar_movimientos_desde_cc(request: Request, seccion: str, codigo: str,
         if not f:
             return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
         if f["anulada_por"]:
-            return RedirectResponse(f"/pagos/{seccion}", status_code=303)
+            return RedirectResponse(f"/pagos/{seccion}?volver=1", status_code=303)
         if f["fecha_reclamo"]:
             return _render_detalle(request, client, seccion, codigo,
                                    error="La factura está rechazada; no admite movimientos.",
@@ -1002,8 +1012,8 @@ def _eliminar_adjunto_factura(request: Request, seccion: str, codigo: str, adj_i
 # ---- Pago a proveedores (facturas recibidas) ----
 
 @app.get("/pagos/proveedores", response_class=HTMLResponse)
-def proveedores_lista(request: Request, desde: str = "", hasta: str = ""):
-    return _vista_lista(request, "proveedores", desde, hasta)
+def proveedores_lista(request: Request, desde: str = "", hasta: str = "", volver: str = ""):
+    return _vista_lista(request, "proveedores", desde, hasta, volver)
 
 
 @app.get("/pagos/proveedores/{codigo}", response_class=HTMLResponse)
@@ -1072,8 +1082,8 @@ def proveedores_eliminar_adjunto(request: Request, codigo: str, adj_id: int):
 # ---- Ingresos (facturas emitidas) ----
 
 @app.get("/pagos/ingresos", response_class=HTMLResponse)
-def ingresos_lista(request: Request, desde: str = "", hasta: str = ""):
-    return _vista_lista(request, "ingresos", desde, hasta)
+def ingresos_lista(request: Request, desde: str = "", hasta: str = "", volver: str = ""):
+    return _vista_lista(request, "ingresos", desde, hasta, volver)
 
 
 @app.get("/pagos/ingresos/{codigo}", response_class=HTMLResponse)

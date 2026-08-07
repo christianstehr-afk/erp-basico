@@ -671,7 +671,11 @@ def rendiciones_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
         SELECT r.id, r.nombre, r.fecha,
                COALESCE((SELECT SUM(i.monto) FROM rendicion_items i WHERE i.rendicion_id = r.id), 0) AS total,
                COALESCE((SELECT SUM(p.monto) FROM rendicion_pagos p WHERE p.rendicion_id = r.id), 0) AS pagado,
-               (SELECT COUNT(*) FROM rendicion_adjuntos a WHERE a.rendicion_id = r.id) AS n_adjuntos
+               (SELECT COUNT(*) FROM rendicion_adjuntos a WHERE a.rendicion_id = r.id) AS n_adjuntos,
+               REPLACE((SELECT GROUP_CONCAT(DISTINCT i.centro_costo)
+                        FROM rendicion_items i
+                        WHERE i.rendicion_id = r.id AND i.centro_costo IS NOT NULL),
+                       ',', ' / ') AS centros
         FROM rendiciones r
         WHERE r.fecha >= ? AND r.fecha <= ?
         ORDER BY r.fecha DESC, r.id DESC

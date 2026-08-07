@@ -79,9 +79,10 @@
             <th class="sortable" data-col="0" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Folio <span class="arrow"></span></th>
             <th class="sortable" data-col="1" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Nombre <span class="arrow"></span></th>
             <th class="sortable" data-col="2" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha <span class="arrow"></span></th>
-            <th class="sortable" data-col="3" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Total <span class="arrow"></span></th>
-            <th class="sortable" data-col="4" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Pagado <span class="arrow"></span></th>
-            <th class="sortable" data-col="5" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
+            <th class="sortable" data-col="3" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none" title="Centro de resultado de los ítems (puede haber más de uno)">Centro <span class="arrow"></span></th>
+            <th class="sortable" data-col="4" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Total <span class="arrow"></span></th>
+            <th class="sortable" data-col="5" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Pagado <span class="arrow"></span></th>
+            <th class="sortable" data-col="6" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
             <th style="padding:12px 14px">Adjuntos</th>
             <th style="padding:12px 14px"></th>
           </tr>
@@ -94,6 +95,11 @@
             <td data-value="{{ f['id'] }}" style="padding:11px 14px"><a href="/pagos/rendiciones/{{ f['id'] }}/pdf" target="_blank" title="Ver PDF de la rendición" style="font-family:var(--mono);font-size:11px;color:var(--green);border-bottom:1px dotted var(--green)">R-{{ '%04d'|format(f['id']) }}</a></td>
             <td style="padding:11px 14px">{{ f["nombre"] }}</td>
             <td data-value="{{ f['fecha'] or '' }}" style="padding:11px 14px;font-family:var(--mono)">{{ f["fecha"] }}</td>
+            <td data-value="{{ f['centros'] or '' }}" style="padding:11px 14px">
+              {% if f["centros"] %}
+                <span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;background:#1c1c1c;color:var(--mist)">{{ f["centros"] }}</span>
+              {% else %}<span style="color:var(--slate)">—</span>{% endif %}
+            </td>
             <td data-value="{{ f['total'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono)">${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}</td>
             <td data-value="{{ f['pagado'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">${{ "{:,.0f}".format(f["pagado"]).replace(",", ".") }}</td>
             <td data-value="{{ 1 if pagada else 0 }}" style="padding:11px 14px">

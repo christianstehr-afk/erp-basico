@@ -35,7 +35,7 @@
 
   <main class="wrap" style="max-width:760px">
     <div class="head">
-      <div class="eyebrow"><a href="/pagos/{{ seccion }}" style="color:var(--slate)">← {{ cfg.titulo }}</a></div>
+      <div class="eyebrow"><a href="/pagos/{{ seccion }}?volver=1" style="color:var(--slate)">← {{ cfg.titulo }}</a></div>
       <h1>{{ f["documento"] }} · Folio {{ f["folio"] }}</h1>
       <p>{{ f["razon_social"] }} · <span style="font-family:var(--mono)">{{ f["rut_contraparte"] }}</span></p>
     </div>
@@ -93,7 +93,7 @@
 
     <!-- Centro de costo / ingreso (LINEA-CAT, ver centros.py) -->
     <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:20px;background:#0f0f0f">
-      <div class="eyebrow" style="margin-bottom:12px">{{ 'Centro de ingreso' if seccion == 'ingresos' else 'Centro de costo' }}</div>
+      <div class="eyebrow" style="margin-bottom:12px">Centro de resultado</div>
       <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/centro"
             style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <select name="centro"
