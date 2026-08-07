@@ -15,10 +15,18 @@ como texto en la columna `centro_costo` de facturas, rendicion_items y
 movimientos_cc (vacío/NULL = sin imputar). El catálogo vive solo acá: agregar
 o quitar una línea/categoría es editar estas listas.
 
-NOTA: renombrar o quitar una línea/categoría aquí NO alcanza para los datos
-ya guardados con el código viejo (p. ej. "AUT-...", "ADM-..." o "GEK-...");
-ver la migración de datos `_renombrar_centros()` en db.py, que corre una sola
-vez al arrancar la app.
+AGREGAR una categoría (como PST en gastos, 2026-08-07) no necesita migración:
+nada quedó guardado antes con ese código. QUITAR o RENOMBRAR sí — los datos
+ya imputados con el código viejo (p. ej. "AUT-...", "ADM-..." o "GEK-...") no
+se arreglan solos; ver la migración `_renombrar_centros()` en db.py, que corre
+una sola vez al arrancar la app.
+
+PST existe en AMBOS catálogos (gasto e ingreso) a propósito: son las dos caras
+de la postventa y comparten código para poder netearlas por línea. El flujo
+del documento (compra o venta) es el que desambigua: cada select ofrece solo
+las categorías de su flujo. Ojo con `etiqueta()`, que recibe el código suelto
+sin saber el flujo: para "EAU-PST" devuelve el nombre del catálogo de
+INGRESO ("Postventa"), porque _NOMBRES se arma con los ingresos al final.
 """
 from __future__ import annotations
 
@@ -36,6 +44,13 @@ CATEGORIAS_GASTO: list[tuple[str, str]] = [
     ("REM", "Remuneraciones"),
     ("TEC", "Tecnología"),
     ("FIN", "Administración y finanzas"),
+    # Costo de atender a un cliente DESPUÉS de la venta: garantías asumidas
+    # por E-Auto (p. ej. la reparación de un Gecko ya vendido, facturada por
+    # un servicio técnico externo), repuestos de garantía, retrabajos.
+    # Distinto de MNT (Mantención), que es mantener vehículos PROPIOS.
+    # Agregada 2026-08-07 como contraparte del ingreso PST, para poder netear
+    # postventa cobrada contra postventa asumida en cada línea.
+    ("PST", "Postventa y garantías"),
 ]
 
 CATEGORIAS_INGRESO: list[tuple[str, str]] = [
