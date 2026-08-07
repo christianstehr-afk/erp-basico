@@ -155,6 +155,26 @@ CREATE TABLE IF NOT EXISTS factura_adjuntos (
 
 CREATE INDEX IF NOT EXISTS idx_factura_adj ON factura_adjuntos(factura_id);
 
+-- Distribución de una factura en varios centros de resultado (p. ej. el TAG
+-- de carreteras o el GPS, que se paga en una sola factura pero corresponde a
+-- una mezcla de vehículos Gecko y de la flota mu-EVT). Si una factura NO tiene
+-- filas acá, se sigue usando su columna simple facturas.centro_costo (caso de
+-- un solo centro, la mayoría). Si SÍ tiene filas (2 o más), esas filas son la
+-- fuente de verdad y facturas.centro_costo queda en NULL; la suma de sus
+-- montos debe ser siempre igual a facturas.total (se valida al guardar, ver
+-- set_distribucion_factura).
+CREATE TABLE IF NOT EXISTS factura_centros (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    factura_id  INTEGER NOT NULL,
+    centro      TEXT NOT NULL,              -- "LINEA-CAT" (ver centros.py)
+    monto       INTEGER NOT NULL,
+    FOREIGN KEY (factura_id) REFERENCES facturas(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_factura_centros ON factura_centros(factura_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_factura_centros_unico
+    ON factura_centros(factura_id, centro);
+
 -- Módulo 4 · Rendiciones (gastos pagados por la empresa)
 CREATE TABLE IF NOT EXISTS rendiciones (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -427,6 +447,19 @@ def pendientes_de_pdf(conn: sqlite3.Connection, tipo: str = "compra") -> list[st
 TIPOS_NO_PAGABLES = (52, 61)
 
 
+# Subquery reutilizable: etiqueta "GEK-OPE 60% / MUE-OPE 40%" cuando la
+# factura está distribuida en 2+ centros (factura_centros), NULL si no. El
+# ORDER BY de la subconsulta interna fija el orden con que GROUP_CONCAT las
+# concatena (truco estándar de SQLite: usa el orden de llegada de filas).
+_SQL_CENTRO_MULTI = """
+    (SELECT GROUP_CONCAT(centro || ' ' || pct || '%', ' / ') FROM (
+        SELECT fc.centro AS centro,
+               CAST(ROUND(fc.monto * 100.0 / f.total) AS INTEGER) AS pct
+        FROM factura_centros fc WHERE fc.factura_id = f.id ORDER BY fc.centro
+    ))
+"""
+
+
 def facturas_con_pago(conn: sqlite3.Connection, tipo: str = "compra") -> list[sqlite3.Row]:
     """Facturas de un tipo con su total pagado agregado y fecha tope.
 
@@ -439,6 +472,7 @@ def facturas_con_pago(conn: sqlite3.Connection, tipo: str = "compra") -> list[sq
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo,
                f.pdf_path, f.descripcion, f.anulada_por, f.centro_costo,
+               {_SQL_CENTRO_MULTI} AS centro_multi,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.tipo = ?
@@ -458,6 +492,7 @@ def facturas_con_pago_en_rango(conn: sqlite3.Connection, tipo: str, desde: str, 
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo,
                f.pdf_path, f.descripcion, f.anulada_por, f.centro_costo,
+               {_SQL_CENTRO_MULTI} AS centro_multi,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.tipo = ?
@@ -472,10 +507,11 @@ def facturas_con_pago_en_rango(conn: sqlite3.Connection, tipo: str, desde: str, 
 def factura_pago_por_codigo(conn: sqlite3.Connection, codigo: str) -> sqlite3.Row | None:
     """Una factura por su codigo_sii con el total pagado agregado."""
     return conn.execute(
-        """
+        f"""
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo, f.pdf_path,
                f.descripcion, f.anulada_por, f.pdf_href_bhe, f.centro_costo,
+               {_SQL_CENTRO_MULTI} AS centro_multi,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.codigo_sii = ?
@@ -498,12 +534,71 @@ def set_descripcion(conn: sqlite3.Connection, codigo: str, descripcion: str) -> 
 
 
 def set_centro_costo(conn: sqlite3.Connection, codigo: str, centro: str | None) -> None:
-    """Imputa la factura a un centro de costo/ingreso ('LINEA-CAT', ver
-    centros.py). Vacío/None = quitar la imputación."""
+    """Imputa la factura a UN centro de costo/ingreso ('LINEA-CAT', ver
+    centros.py). Vacío/None = quitar la imputación.
+
+    Elegir un centro único siempre vuelve al modo simple: si la factura
+    estaba distribuida en varios centros (factura_centros), esa distribución
+    se borra (ver set_distribucion_factura). Es la vía de "deshacer" la
+    distribución sin un botón aparte.
+    """
     conn.execute(
         "UPDATE facturas SET centro_costo = ? WHERE codigo_sii = ?",
         (centro or None, codigo),
     )
+    conn.execute(
+        "DELETE FROM factura_centros WHERE factura_id = "
+        "(SELECT id FROM facturas WHERE codigo_sii = ?)",
+        (codigo,),
+    )
+
+
+def centros_de_factura(conn: sqlite3.Connection, factura_id: int) -> list[sqlite3.Row]:
+    """Distribución de una factura en varios centros (vacío si no está
+    distribuida: en ese caso manda su centro_costo simple)."""
+    return conn.execute(
+        "SELECT id, centro, monto FROM factura_centros WHERE factura_id = ? ORDER BY centro",
+        (factura_id,),
+    ).fetchall()
+
+
+def set_distribucion_factura(conn: sqlite3.Connection, factura_id: int, total: int,
+                             distribucion: list[dict]) -> str | None:
+    """Distribuye una factura en 2 o más centros de resultado, cada uno con su
+    monto en pesos. Devuelve None si quedó guardada, o un mensaje de error si
+    no pasó la validación (y no escribe nada en ese caso).
+
+    `distribucion`: lista de {"centro": "LINEA-CAT", "monto": int}. Reglas:
+    al menos 2 filas, sin centros repetidos, todos los montos > 0, y la suma
+    debe calzar EXACTO con `total` (la factura completa, no un pago parcial:
+    lo que se reparte es el documento, los pagos se prorratean solos después,
+    ver movimientos_en_rango). Al guardar, se limpia facturas.centro_costo
+    (la distribución pasa a ser la fuente de verdad de esta factura).
+    """
+    filas = [
+        {"centro": (d.get("centro") or "").strip().upper(), "monto": int(d.get("monto") or 0)}
+        for d in distribucion
+    ]
+    filas = [d for d in filas if d["centro"] and d["monto"] > 0]
+    if len(filas) < 2:
+        return "Se necesitan al menos 2 centros con monto mayor a cero."
+    vistos = {d["centro"] for d in filas}
+    if len(vistos) != len(filas):
+        return "No se puede repetir el mismo centro."
+    if sum(d["monto"] for d in filas) != int(total):
+        return "La suma de los montos debe ser igual al total del documento."
+    conn.execute("DELETE FROM factura_centros WHERE factura_id = ?", (factura_id,))
+    conn.executemany(
+        "INSERT INTO factura_centros (factura_id, centro, monto) VALUES (?, ?, ?)",
+        [(factura_id, d["centro"], d["monto"]) for d in filas],
+    )
+    conn.execute("UPDATE facturas SET centro_costo = NULL WHERE id = ?", (factura_id,))
+    return None
+
+
+def quitar_distribucion_factura(conn: sqlite3.Connection, factura_id: int) -> None:
+    """Vuelve la factura al modo simple (un solo centro, o ninguno)."""
+    conn.execute("DELETE FROM factura_centros WHERE factura_id = ?", (factura_id,))
 
 
 # ---------------------------------------------------------------------------
@@ -791,17 +886,43 @@ def codigo_rendicion(rid: int) -> str:
     return f"R-{int(rid):04d}"
 
 
+def _prorratear(distrib: list[tuple[str, int]], total_doc: int, monto_pago: int) -> list[tuple[str, int]]:
+    """Reparte `monto_pago` (un pago o cobro, puede ser parcial) entre los
+    centros de `distrib` (lista de (centro, monto_del_documento_completo)),
+    en las mismas proporciones que tiene el documento completo (`total_doc`).
+
+    El redondeo se acumula en el último centro (orden alfabético, estable)
+    para que la suma de las partes sea SIEMPRE exactamente `monto_pago`."""
+    if not total_doc or not distrib:
+        return []
+    ordenados = sorted(distrib)
+    partes: list[tuple[str, int]] = []
+    asignado = 0
+    for i, (centro, monto_doc) in enumerate(ordenados):
+        if i == len(ordenados) - 1:
+            frac = monto_pago - asignado
+        else:
+            frac = round(monto_pago * monto_doc / total_doc)
+            asignado += frac
+        partes.append((centro, frac))
+    return partes
+
+
 def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> list[dict]:
     """Movimientos de caja entre `desde` y `hasta` (YYYY-MM-DD, ambos inclusive),
     ordenados por fecha. Cada movimiento es un dict con:
-    fecha, flujo ('Ingreso'|'Egreso'), descripcion, monto, origen, ref.
+    fecha, flujo ('Ingreso'|'Egreso'), descripcion, monto, origen, ref, centro
+    (etiqueta para mostrar) y centros_detalle (lista de (centro, monto) que
+    siempre suma el monto del movimiento; se usa para la hoja "Por centro"
+    del Excel, prorrateando facturas/rendiciones con varios centros).
     """
     movs: list[dict] = []
 
     # Pagos/cobros asociados a facturas.
-    for p in conn.execute(
+    filas_fact = conn.execute(
         """
         SELECT p.fecha AS fecha, p.direccion AS direccion, p.monto AS monto,
+               f.id AS factura_id, f.total AS factura_total,
                f.tipo AS ftipo, f.documento AS documento, f.folio AS folio,
                f.razon_social AS razon_social, f.codigo_sii AS codigo_sii,
                f.centro_costo AS centro_costo
@@ -812,7 +933,22 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
           AND (p.externo IS NULL OR p.externo = 0)
         """,
         (desde, hasta),
-    ).fetchall():
+    ).fetchall()
+
+    # Distribución (si la hay) de cada factura involucrada, para prorratear
+    # el pago según el % de cada centro EN EL DOCUMENTO completo (no en el
+    # pago parcial: las proporciones son del documento, siempre).
+    distrib_por_factura: dict[int, list[tuple[str, int]]] = {}
+    ids_fact = {r["factura_id"] for r in filas_fact}
+    if ids_fact:
+        marcadores = ",".join("?" * len(ids_fact))
+        for r in conn.execute(
+            f"SELECT factura_id, centro, monto FROM factura_centros WHERE factura_id IN ({marcadores})",
+            tuple(ids_fact),
+        ).fetchall():
+            distrib_por_factura.setdefault(r["factura_id"], []).append((r["centro"], r["monto"]))
+
+    for p in filas_fact:
         # 'recibido' = E-Auto cobra (ingreso); 'emitido' = E-Auto paga (egreso).
         ingreso = p["direccion"] == "recibido"
         doc = (p["documento"] or "Factura").strip()
@@ -821,6 +957,15 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
         desc = doc + (f" N° {folio}" if folio else "")
         if rs:
             desc += f" · {rs}"
+        distrib = distrib_por_factura.get(p["factura_id"])
+        if distrib:
+            total_doc = p["factura_total"] or sum(m for _, m in distrib)
+            pct = {c: (round(m * 100 / total_doc) if total_doc else 0) for c, m in distrib}
+            centro_label = " / ".join(f"{c} {pct[c]}%" for c, _ in sorted(distrib))
+            centros_detalle = _prorratear(distrib, total_doc, p["monto"])
+        else:
+            centro_label = p["centro_costo"] or ""
+            centros_detalle = [(centro_label, p["monto"])] if centro_label else []
         movs.append({
             "fecha": p["fecha"],
             "flujo": "Ingreso" if ingreso else "Egreso",
@@ -828,11 +973,12 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
             "monto": p["monto"],
             "origen": "factura",
             "ref": p["codigo_sii"],
-            "centro": p["centro_costo"] or "",
+            "centro": centro_label,
+            "centros_detalle": centros_detalle,
         })
 
     # Pagos de rendiciones (siempre egreso).
-    for p in conn.execute(
+    filas_rend = conn.execute(
         """
         SELECT rp.fecha AS fecha, rp.monto AS monto,
                r.id AS rid, r.nombre AS nombre,
@@ -844,7 +990,29 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
         WHERE rp.fecha >= ? AND rp.fecha <= ?
         """,
         (desde, hasta),
-    ).fetchall():
+    ).fetchall()
+
+    # Ítems de cada rendición involucrada, para prorratear igual que arriba
+    # (por el monto de cada ítem sobre el total de la rendición). Los ítems
+    # sin centro caen en "(sin imputar)" para que la suma siempre calce.
+    items_por_rendicion: dict[int, list[tuple[str, int]]] = {}
+    ids_rend = {r["rid"] for r in filas_rend}
+    if ids_rend:
+        marcadores = ",".join("?" * len(ids_rend))
+        for r in conn.execute(
+            f"SELECT rendicion_id, centro_costo, monto FROM rendicion_items WHERE rendicion_id IN ({marcadores})",
+            tuple(ids_rend),
+        ).fetchall():
+            items_por_rendicion.setdefault(r["rendicion_id"], []).append(
+                (r["centro_costo"] or "(sin imputar)", r["monto"])
+            )
+
+    for p in filas_rend:
+        items = items_por_rendicion.get(p["rid"], [])
+        agrupado: dict[str, int] = {}
+        for c, m in items:
+            agrupado[c] = agrupado.get(c, 0) + m
+        total_rend = sum(agrupado.values())
         movs.append({
             "fecha": p["fecha"],
             "flujo": "Egreso",
@@ -854,6 +1022,7 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
             "ref": p["rid"],
             # Centros de los ítems de la rendición (puede haber más de uno).
             "centro": (p["centros"] or "").replace(",", " / "),
+            "centros_detalle": _prorratear(list(agrupado.items()), total_rend, p["monto"]),
         })
 
     # Orden estable: por fecha; a igual fecha, ingresos antes que egresos.
@@ -967,9 +1136,10 @@ def movimientos_cc_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) ->
     (Así, cambiar el centro de una factura ya imputada se refleja al tiro acá,
     sin re-sincronizar nada.)"""
     return conn.execute(
-        """
+        f"""
         SELECT m.*,
                COALESCE(
+                   {_SQL_CENTRO_MULTI},
                    f.centro_costo,
                    REPLACE((SELECT GROUP_CONCAT(DISTINCT i.centro_costo)
                             FROM rendicion_items i

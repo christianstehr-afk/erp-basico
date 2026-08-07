@@ -107,8 +107,10 @@
                 <span title="{{ f['descripcion'] }}" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f["descripcion"] }}</span>
               {% else %}<span style="color:var(--slate)">—</span>{% endif %}
             </td>
-            <td data-value="{{ f['centro_costo'] or '' }}" style="padding:11px 14px">
-              {% if f["centro_costo"] %}
+            <td data-value="{{ f['centro_multi'] or f['centro_costo'] or '' }}" style="padding:11px 14px">
+              {% if f["centro_multi"] %}
+                <span title="Factura distribuida en varios centros" style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;background:#1c1c1c;color:var(--mist)">{{ f["centro_multi"] }}</span>
+              {% elif f["centro_costo"] %}
                 <span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;background:#1c1c1c;color:var(--mist)">{{ f["centro_costo"] }}</span>
               {% else %}<span style="color:var(--slate)">—</span>{% endif %}
             </td>

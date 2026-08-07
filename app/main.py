@@ -677,6 +677,7 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
             if rid_asoc is not None:
                 rend_asociada = {"id": rid_asoc, "codigo": db.codigo_rendicion(rid_asoc)}
         movs_manuales = db.movimientos_cc_manuales(conn, _FLUJO_DE_DIRECCION[cfg["direccion"]])
+        distribucion = db.centros_de_factura(conn, f["id"])
     finally:
         conn.close()
     return templates.TemplateResponse(
@@ -691,6 +692,7 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
             # Catálogo de centros según la sección: proveedores imputa GASTOS,
             # ingresos imputa INGRESOS (ver centros.py).
             "centros_grupos": centros.grupos("ingreso" if seccion == "ingresos" else "gasto"),
+            "distribucion": distribucion,  # filas de factura_centros, vacío = modo simple
         },
         status_code=status_code,
     )
@@ -791,6 +793,62 @@ def _guardar_centro(request: Request, seccion: str, codigo: str, centro: str):
     finally:
         conn.close()
     _log_evento(request, f"Centro de costo actualizado · {seccion} {codigo} → {centro or '(sin imputar)'}")
+    return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
+
+
+def _guardar_distribucion(request: Request, seccion: str, codigo: str,
+                          centro: list[str], monto: list[str]):
+    """Distribuye una factura en 2+ centros de resultado (p. ej. el TAG de
+    carreteras, mitad Gecko/mitad flota). `centro`/`monto` llegan pareados por
+    posición: fila i del formulario -> centro[i], monto[i]."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    flujo = "ingreso" if seccion == "ingresos" else "gasto"
+    conn = db.get_conn()
+    try:
+        f = db.factura_pago_por_codigo(conn, codigo)
+        if not f:
+            return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
+        filas = []
+        for i in range(max(len(centro), len(monto))):
+            c = (centro[i] if i < len(centro) else "").strip().upper()
+            m = monto[i] if i < len(monto) else "0"
+            try:
+                m_int = int(float(m))
+            except (ValueError, TypeError):
+                m_int = 0
+            if c and m_int > 0:
+                filas.append({"centro": c, "monto": m_int})
+        invalidos = [d["centro"] for d in filas if not centros.es_valido(d["centro"], flujo)]
+        if invalidos:
+            return _render_detalle(request, client, seccion, codigo,
+                                   error=f"Centro inválido: {invalidos[0]}.", status_code=400)
+        error = db.set_distribucion_factura(conn, f["id"], f["total"], filas)
+        if error:
+            return _render_detalle(request, client, seccion, codigo, error=error, status_code=400)
+        conn.commit()
+    finally:
+        conn.close()
+    resumen = ", ".join(f"{d['centro']} ${d['monto']}" for d in filas)
+    _log_evento(request, f"Factura distribuida en varios centros · {seccion} {codigo} · {resumen}")
+    return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
+
+
+def _quitar_distribucion(request: Request, seccion: str, codigo: str):
+    """Vuelve la factura al modo simple (un centro único, o ninguno)."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    conn = db.get_conn()
+    try:
+        f = db.factura_pago_por_codigo(conn, codigo)
+        if f:
+            db.quitar_distribucion_factura(conn, f["id"])
+            conn.commit()
+    finally:
+        conn.close()
+    _log_evento(request, f"Distribución de centros eliminada · {seccion} {codigo}")
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
@@ -1044,6 +1102,18 @@ def proveedores_centro(request: Request, codigo: str, centro: str = Form("")):
     return _guardar_centro(request, "proveedores", codigo, centro)
 
 
+@app.post("/pagos/proveedores/{codigo}/distribucion")
+def proveedores_distribucion(request: Request, codigo: str,
+                             centro: list[str] = Form(default=[]),
+                             monto: list[str] = Form(default=[])):
+    return _guardar_distribucion(request, "proveedores", codigo, centro, monto)
+
+
+@app.post("/pagos/proveedores/{codigo}/distribucion/quitar")
+def proveedores_quitar_distribucion(request: Request, codigo: str):
+    return _quitar_distribucion(request, "proveedores", codigo)
+
+
 @app.post("/pagos/proveedores/{codigo}/pago")
 def proveedores_agregar(request: Request, codigo: str,
                         fecha: str = Form(...), monto: str = Form(...),
@@ -1112,6 +1182,18 @@ def ingresos_descripcion(request: Request, codigo: str, descripcion: str = Form(
 @app.post("/pagos/ingresos/{codigo}/centro")
 def ingresos_centro(request: Request, codigo: str, centro: str = Form("")):
     return _guardar_centro(request, "ingresos", codigo, centro)
+
+
+@app.post("/pagos/ingresos/{codigo}/distribucion")
+def ingresos_distribucion(request: Request, codigo: str,
+                          centro: list[str] = Form(default=[]),
+                          monto: list[str] = Form(default=[])):
+    return _guardar_distribucion(request, "ingresos", codigo, centro, monto)
+
+
+@app.post("/pagos/ingresos/{codigo}/distribucion/quitar")
+def ingresos_quitar_distribucion(request: Request, codigo: str):
+    return _quitar_distribucion(request, "ingresos", codigo)
 
 
 @app.post("/pagos/ingresos/{codigo}/pago")

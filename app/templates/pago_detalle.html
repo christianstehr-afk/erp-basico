@@ -91,11 +91,33 @@
       </form>
     </div>
 
-    <!-- Centro de costo / ingreso (LINEA-CAT, ver centros.py) -->
+    <!-- Centro de resultado (LINEA-CAT, ver centros.py): un centro único, o
+         distribuido en 2+ (p. ej. TAG de carreteras: mitad Gecko, mitad flota). -->
     <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:20px;background:#0f0f0f">
       <div class="eyebrow" style="margin-bottom:12px">Centro de resultado</div>
+
+      {% if distribucion %}
+      <!-- Modo distribuido: de solo lectura acá, con % calculado sobre el total. -->
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        {% for d in distribucion %}
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid #1c1c1c;border-radius:var(--radius);padding:9px 12px">
+          <span style="font-family:var(--mono);font-size:13px">{{ d["centro"] }}</span>
+          <span style="font-family:var(--mono);font-size:12px;color:var(--slate)">
+            {{ "{:,.0f}".format((d["monto"] / f["total"] * 100) if f["total"] else 0).replace(",", ".") }}%
+            · ${{ "{:,.0f}".format(d["monto"]).replace(",", ".") }}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+      <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/distribucion/quitar"
+            onsubmit="return confirm('¿Volver a un solo centro para esta factura?')">
+        <button type="submit"
+          style="background:none;border:1px solid #2b2b2b;color:var(--snow);padding:8px 14px;border-radius:var(--radius);font-size:12px">Volver a centro único</button>
+      </form>
+      {% else %}
+      <!-- Modo simple: un solo centro. -->
       <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/centro"
-            style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
         <select name="centro"
           style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:13px;font-family:var(--mono);min-width:260px">
           <option value="">— Sin imputar —</option>
@@ -111,6 +133,32 @@
           style="background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:var(--radius);font-weight:700;font-size:13px">Guardar</button>
         <span style="color:var(--slate);font-size:12px">Línea de negocio + categoría, para el resultado por línea.</span>
       </form>
+      <button type="button" onclick="abrirDistribucion()"
+        style="background:none;border:1px solid #2b2b2b;color:var(--mist);padding:8px 14px;border-radius:var(--radius);font-size:12px;cursor:pointer">Distribuir en varios centros</button>
+
+      <!-- Distribución: filas centro + %/$; la suma siempre debe calzar con el total. -->
+      <div id="bloque-distribucion" style="display:none;margin-top:16px;border-top:1px solid #161616;padding-top:16px">
+        <p style="color:var(--slate);font-size:12px;margin-bottom:12px">
+          Para facturas mixtas (p. ej. TAG o GPS compartido entre Gecko y la flota mu-EVT).
+          Ingresa % o monto en cada fila; la suma debe ser el total de la factura
+          (${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}).
+        </p>
+        <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/distribucion">
+          <div id="filas-distribucion" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+            <button type="button" onclick="agregarFilaDistribucion()"
+              style="background:none;border:1px solid #2b2b2b;color:var(--snow);padding:7px 12px;border-radius:var(--radius);font-size:12px">+ Agregar fila</button>
+            <span id="suma-distribucion" style="font-family:var(--mono);font-size:12px"></span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:14px">
+            <button type="submit" id="btn-guardar-distribucion"
+              style="background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:var(--radius);font-weight:700;font-size:13px">Guardar distribución</button>
+            <button type="button" onclick="cerrarDistribucion()"
+              style="background:none;border:1px solid #2b2b2b;color:var(--mist);padding:10px 16px;border-radius:var(--radius);font-size:13px">Cancelar</button>
+          </div>
+        </form>
+      </div>
+      {% endif %}
     </div>
 
     <!-- Descripción de la gestión (una nota por factura, no por movimiento parcial) -->
@@ -292,6 +340,87 @@
       {% endif %}
     </div>
   </div>
+  {% endif %}
+
+  {% if not distribucion %}
+  <script>
+    // Distribución de la factura en varios centros de resultado: filas
+    // (centro + %/$), con conversión automática entre porcentaje y monto y
+    // verificación en vivo de que la suma calce con el total del documento.
+    (function () {
+      var TOTAL = {{ f["total"] }};
+      var CENTROS_HTML = '<option value="">— Centro —</option>' +
+        '{% for g in centros_grupos %}<optgroup label="{{ g.nombre }} ({{ g.codigo }})">{% for cod, nom in g.opciones %}<option value="{{ cod }}">{{ cod }} · {{ nom }}</option>{% endfor %}</optgroup>{% endfor %}';
+
+      function fmt(n) { return "$" + Math.round(n || 0).toLocaleString("es-CL"); }
+
+      function fila() {
+        var div = document.createElement("div");
+        div.style.display = "flex";
+        div.style.gap = "8px";
+        div.style.alignItems = "center";
+        div.style.flexWrap = "wrap";
+        div.innerHTML =
+          '<select name="centro" style="background:#111;border:1px solid #262626;color:var(--snow);padding:9px;border-radius:var(--radius);font-size:12px;font-family:var(--mono);min-width:210px">' + CENTROS_HTML + '</select>' +
+          '<input type="number" class="fd-pct" min="0" max="100" step="1" placeholder="%" style="width:70px;background:#111;border:1px solid #262626;color:var(--snow);padding:9px;border-radius:var(--radius);font-size:13px;font-family:var(--mono);text-align:right">' +
+          '<span style="color:var(--slate);font-size:12px">%&nbsp;=</span>' +
+          '<input type="number" name="monto" class="fd-monto" min="0" step="1" placeholder="0" style="width:120px;background:#111;border:1px solid #262626;color:var(--snow);padding:9px;border-radius:var(--radius);font-size:13px;font-family:var(--mono);text-align:right">' +
+          '<button type="button" class="fd-quitar" title="Quitar fila" style="background:none;border:1px solid #2b2b2b;color:var(--slate);padding:6px 10px;border-radius:var(--radius);font-size:13px">×</button>';
+        var pct = div.querySelector(".fd-pct");
+        var monto = div.querySelector(".fd-monto");
+        pct.addEventListener("input", function () {
+          if (pct.value === "") return;
+          monto.value = Math.round(TOTAL * (parseFloat(pct.value) || 0) / 100);
+          recalcular();
+        });
+        monto.addEventListener("input", function () {
+          if (monto.value !== "" && TOTAL > 0) {
+            pct.value = Math.round((parseFloat(monto.value) || 0) / TOTAL * 100);
+          }
+          recalcular();
+        });
+        div.querySelector(".fd-quitar").addEventListener("click", function () {
+          var cont = document.getElementById("filas-distribucion");
+          if (cont.children.length > 2) { div.remove(); recalcular(); }
+        });
+        return div;
+      }
+
+      function recalcular() {
+        var suma = 0;
+        document.querySelectorAll("#filas-distribucion .fd-monto").forEach(function (i) {
+          suma += parseFloat(i.value) || 0;
+        });
+        var el = document.getElementById("suma-distribucion");
+        if (!el) return;
+        var ok = suma === TOTAL;
+        el.style.color = ok ? "var(--green)" : "var(--red)";
+        el.textContent = "Suma: " + fmt(suma) + " de " + fmt(TOTAL) + (ok ? " ✓" : "");
+        var btn = document.getElementById("btn-guardar-distribucion");
+        if (btn) btn.disabled = !ok;
+      }
+
+      window.agregarFilaDistribucion = function () {
+        document.getElementById("filas-distribucion").appendChild(fila());
+        recalcular();
+      };
+      window.abrirDistribucion = function () {
+        var bloque = document.getElementById("bloque-distribucion");
+        if (!bloque) return;
+        bloque.style.display = "block";
+        var cont = document.getElementById("filas-distribucion");
+        if (cont.children.length === 0) {
+          cont.appendChild(fila());
+          cont.appendChild(fila());
+        }
+        recalcular();
+      };
+      window.cerrarDistribucion = function () {
+        var bloque = document.getElementById("bloque-distribucion");
+        if (bloque) bloque.style.display = "none";
+      };
+    })();
+  </script>
   {% endif %}
 
   <script>

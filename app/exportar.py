@@ -152,15 +152,21 @@ def construir_excel(movimientos: list[dict], desde: str, hasta: str) -> bytes:
         c.fill = PatternFill("solid", fgColor=tinta)
         if col > 1:
             c.alignment = Alignment(horizontal="right")
+    # Cuando el movimiento viene de una factura/rendición repartida en varios
+    # centros ("centros_detalle": lista de (centro, monto) que suma el monto
+    # del movimiento — ver db.movimientos_en_rango), cada centro aporta solo
+    # su parte proporcional, no el monto completo. Así el TAG de carreteras
+    # pagado 60% Gecko / 40% flota queda bien repartido en este resumen.
     resumen: dict = {}
     for m in movimientos:
-        clave = m.get("centro") or "(sin imputar)"
-        ing, egr = resumen.get(clave, (0, 0))
-        if m["flujo"] == "Ingreso":
-            ing += m["monto"]
-        else:
-            egr += m["monto"]
-        resumen[clave] = (ing, egr)
+        detalle = m.get("centros_detalle") or [(m.get("centro") or "(sin imputar)", m["monto"])]
+        for clave, monto_parte in detalle:
+            ing, egr = resumen.get(clave, (0, 0))
+            if m["flujo"] == "Ingreso":
+                ing += monto_parte
+            else:
+                egr += monto_parte
+            resumen[clave] = (ing, egr)
     fila2 = 5
     for clave in sorted(resumen, key=lambda k: (k == "(sin imputar)", k)):
         ing, egr = resumen[clave]
