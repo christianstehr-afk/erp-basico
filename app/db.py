@@ -323,6 +323,61 @@ def _migrar(conn: sqlite3.Connection) -> None:
         "UPDATE facturas SET fecha_pago_tope = fecha_emision "
         "WHERE fecha_pago_tope IS NULL OR fecha_pago_tope = ''"
     )
+    _renombrar_centros(conn)
+
+
+# Líneas de negocio retiradas del catálogo (ver centros.py) y a qué línea
+# vigente se le traspasan sus costos/ingresos ya guardados. GEK (Las Gecko)
+# y ADM (Corporativo) se fusionaron en EAU (E-Auto) el 2026-08-07; antes de
+# eso, AUT ya se había renombrado a EAU. Mantener este mapeo aunque el
+# catálogo cambie de nuevo más adelante: cada entrada es un renombre que YA
+# ocurrió y que sigue haciendo falta aplicar en BDs que aún no lo vieron.
+_RENOMBRES_CENTRO = {"AUT-": "EAU-", "ADM-": "EAU-", "GEK-": "EAU-"}
+
+
+def _renombrar_centros(conn: sqlite3.Connection) -> None:
+    """Aplica los renombres de `_RENOMBRES_CENTRO` a todo dato ya guardado
+    con un código de línea que ya no existe en el catálogo (ver centros.py).
+    Idempotente: una vez migrado no queda ningún código viejo, así que en
+    arranques siguientes las consultas LIKE no encuentran nada que tocar.
+    """
+    for tabla, columna in (
+        ("facturas", "centro_costo"),
+        ("rendicion_items", "centro_costo"),
+        ("movimientos_cc", "centro_costo"),
+    ):
+        for viejo, nuevo in _RENOMBRES_CENTRO.items():
+            conn.execute(
+                f"UPDATE {tabla} SET {columna} = ? || substr({columna}, 5) "
+                f"WHERE {columna} LIKE ?",
+                (nuevo, viejo + "%"),
+            )
+    # factura_centros tiene UNIQUE(factura_id, centro): si una misma factura
+    # ya tuviera, por ejemplo, GEK-FIN y ADM-FIN a la vez (no debería darse en
+    # la práctica, pero por si acaso), renombrar directo violaría el índice.
+    # Se fusionan sumando los montos en ese caso.
+    for viejo, nuevo in _RENOMBRES_CENTRO.items():
+        filas = conn.execute(
+            "SELECT id, factura_id, centro, monto FROM factura_centros WHERE centro LIKE ?",
+            (viejo + "%",),
+        ).fetchall()
+        for r in filas:
+            centro_nuevo = nuevo + r["centro"][4:]
+            existente = conn.execute(
+                "SELECT id FROM factura_centros WHERE factura_id = ? AND centro = ? AND id != ?",
+                (r["factura_id"], centro_nuevo, r["id"]),
+            ).fetchone()
+            if existente:
+                conn.execute(
+                    "UPDATE factura_centros SET monto = monto + ? WHERE id = ?",
+                    (r["monto"], existente["id"]),
+                )
+                conn.execute("DELETE FROM factura_centros WHERE id = ?", (r["id"],))
+            else:
+                conn.execute(
+                    "UPDATE factura_centros SET centro = ? WHERE id = ?",
+                    (centro_nuevo, r["id"]),
+                )
 
 
 def init_db() -> None:

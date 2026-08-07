@@ -1,25 +1,30 @@
 """
 Catálogo de centros de costo e ingreso.
 
-Estructura en dos niveles, acordada con Christian (2026-08-06):
-  · Nivel 1 — Línea de negocio: GEK (Las Gecko), MUE (mu-EVT, transporte de
-    personas), AUT (importación y venta de autos), ADM (corporativo).
+Estructura en dos niveles:
+  · Nivel 1 — Línea de negocio: MUE (mu-EVT, transporte de personas) y EAU
+    (E-Auto: importación y venta de autos —incluye Las Gecko, que dejó de
+    ser su propia línea el 2026-08-07— y también los costos de
+    administración/corporativos, que antes tenían su propia línea ADM).
   · Nivel 2 — Categoría: distinta según el flujo. Los GASTOS usan las
     categorías de costo (IMP, DES, MKT, ...) y los INGRESOS su propio
     catálogo corto (VEH, CON, SRV, ...).
 
-El código imputable es "LINEA-CATEGORIA", p. ej. GEK-MNT o MUE-SRV. Se guarda
+El código imputable es "LINEA-CATEGORIA", p. ej. EAU-MNT o MUE-SRV. Se guarda
 como texto en la columna `centro_costo` de facturas, rendicion_items y
 movimientos_cc (vacío/NULL = sin imputar). El catálogo vive solo acá: agregar
 o quitar una línea/categoría es editar estas listas.
+
+NOTA: renombrar o quitar una línea/categoría aquí NO alcanza para los datos
+ya guardados con el código viejo (p. ej. "AUT-...", "ADM-..." o "GEK-...");
+ver la migración de datos `_renombrar_centros()` en db.py, que corre una sola
+vez al arrancar la app.
 """
 from __future__ import annotations
 
 LINEAS: list[tuple[str, str]] = [
-    ("GEK", "Las Gecko"),
     ("MUE", "mu-EVT"),
-    ("AUT", "Autos"),
-    ("ADM", "Corporativo"),
+    ("EAU", "E-Auto"),
 ]
 
 CATEGORIAS_GASTO: list[tuple[str, str]] = [
@@ -78,7 +83,7 @@ def es_valido(codigo: str, flujo: str) -> bool:
 
 
 def etiqueta(codigo: str) -> str:
-    """Descripción legible de un código: 'GEK-MNT' -> 'Las Gecko · Mantención'.
+    """Descripción legible de un código: 'EAU-MNT' -> 'E-Auto · Mantención'.
 
     Si el código no calza con el catálogo (o viene vacío), se devuelve tal cual.
     """
