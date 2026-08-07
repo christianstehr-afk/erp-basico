@@ -304,6 +304,45 @@ def kpis_data(request: Request, desde: str = "", hasta: str = "",
     return JSONResponse(datos)
 
 
+@app.get("/kpis/detalle")
+def kpis_detalle(request: Request, desde: str = "", hasta: str = "", linea: str = "",
+                 base: str = "devengado", flujo: str = "", mes: str = "", categoria: str = "",
+                 aging_tipo: str = "", aging_bucket: str = ""):
+    """Drill-down de /kpis: documentos que componen la cifra en la que se
+    hizo clic (una barra, un segmento, una celda del heatmap, un tramo de
+    aging). Dos modos, según qué parámetros lleguen:
+    - aging_tipo + aging_bucket: db.detalle_aging (documentos vencidos/por
+      vencer de ese tramo).
+    - flujo (+ mes/categoria opcionales): db.detalle_documentos.
+    Ver db.datos_kpis: mismo prorrateo, la suma de `monto` acá siempre calza
+    exacto con el valor que se mostró en el gráfico."""
+    client = _current_client(request)
+    if not client or not client.rut:
+        return Response(status_code=401)
+    linea = (linea or "").strip().upper()
+    if linea not in ("", "MUE", "EAU"):
+        linea = ""
+    base = "caja" if (base or "").strip().lower() == "caja" else "devengado"
+    conn = db.get_conn()
+    try:
+        aging_tipo = (aging_tipo or "").strip().lower()
+        if aging_tipo in ("cobrar", "pagar"):
+            tipo = "venta" if aging_tipo == "cobrar" else "compra"
+            filas = db.detalle_aging(conn, tipo, (aging_bucket or "").strip(), linea)
+        else:
+            flujo_n = "ingreso" if (flujo or "").strip().lower() == "ingreso" else "egreso"
+            d = (desde or "").strip() or "2025-01-01"
+            h = (hasta or "").strip() or date.today().isoformat()
+            filas = db.detalle_documentos(
+                conn, d, h, linea, base, flujo_n,
+                mes=(mes or "").strip() or None,
+                categoria=(categoria or "").strip() or None,
+            )
+    finally:
+        conn.close()
+    return JSONResponse({"filas": filas, "total": sum(f["monto"] for f in filas)})
+
+
 @app.get("/sii/estado")
 def sii_estado(request: Request):
     """Chequeo liviano y en vivo de la sesión con el SII, para el Cockpit.

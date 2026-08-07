@@ -35,6 +35,25 @@
     .heat{width:100%;border-collapse:separate;border-spacing:3px}
     .heat th{font-family:var(--mono);font-size:10px;color:var(--slate);font-weight:400;padding:4px}
     .heat td{border-radius:4px;text-align:center;font-family:var(--mono);font-size:10.5px;padding:12px 4px;color:#dfe7df}
+    .heat-cell{cursor:pointer}
+    .heat-cell:hover{outline:1px solid var(--green)}
+    .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:80;padding:20px}
+    .modal-overlay.on{display:flex}
+    .modal-box{background:#101010;border:1px solid #262626;border-radius:var(--radius);max-width:1150px;width:100%;max-height:86vh;display:flex;flex-direction:column}
+    .modal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:16px 20px;border-bottom:1px solid #1c1c1c}
+    .modal-head h3{margin:0;font-size:15px}
+    .modal-head .sub{margin:4px 0 0;font-size:11.5px;color:var(--slate);font-family:var(--mono)}
+    .modal-x{background:none;border:none;color:var(--slate);font-size:20px;cursor:pointer;line-height:1;padding:2px 4px}
+    .modal-x:hover{color:var(--snow)}
+    .modal-body{overflow:auto;padding:0 20px}
+    .modal-table{width:100%;border-collapse:collapse;font-size:12px}
+    .modal-table th{text-align:left;font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--slate);padding:10px 8px;border-bottom:1px solid #1c1c1c;position:sticky;top:0;background:#101010;white-space:nowrap}
+    .modal-table td{padding:9px 8px;border-bottom:1px solid #171717;white-space:nowrap;font-size:12px}
+    .modal-table td.wrap{white-space:normal;max-width:260px}
+    .modal-table tr:hover td{background:#161616}
+    .modal-table a{color:var(--green)}
+    .modal-empty{padding:26px 4px;color:var(--slate);font-size:13px}
+    .modal-foot{padding:12px 20px;border-top:1px solid #1c1c1c;font-family:var(--mono);font-size:12px;color:var(--slate);display:flex;justify-content:space-between}
   </style>
 </head>
 <body>
@@ -127,7 +146,40 @@
         <div class="chart-box"><canvas id="ch-aging"></canvas></div>
       </div>
     </div>
+
+    <p style="color:var(--slate);font-size:11.5px;font-family:var(--mono);margin-top:-6px">
+      💡 Clic en una barra, un segmento o una celda: abre el detalle documento a documento que compone ese valor.
+    </p>
   </main>
+
+  <!-- Modal de detalle (drill-down) -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-head">
+        <div>
+          <h3 id="modal-title">Detalle</h3>
+          <p class="sub" id="modal-sub"></p>
+        </div>
+        <button type="button" class="modal-x" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <table class="modal-table">
+          <thead>
+            <tr>
+              <th>Fecha</th><th>Documento</th><th>Folio</th><th>Contraparte</th><th>RUT</th>
+              <th>Centro</th><th style="text-align:right">Monto</th><th style="text-align:right">Total doc.</th><th>Estado</th>
+            </tr>
+          </thead>
+          <tbody id="modal-tbody"></tbody>
+        </table>
+        <div class="modal-empty" id="modal-empty" style="display:none">Sin documentos en este tramo.</div>
+      </div>
+      <div class="modal-foot">
+        <span id="modal-count"></span>
+        <span>Total: <span id="modal-total"></span></span>
+      </div>
+    </div>
+  </div>
 
 <script>
 (function(){
@@ -139,6 +191,10 @@
   Chart.defaults.font.family = "Montserrat, Arial, sans-serif";
   Chart.defaults.font.size = 11;
 
+  function esc(s){
+    return (s === null || s === undefined ? "" : String(s))
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
   function clp(n){ return "$" + Math.round(n).toLocaleString("es-CL"); }
   function clpCorto(n){
     var a = Math.abs(n);
@@ -181,6 +237,83 @@
     document.getElementById("cards").innerHTML = html;
   }
 
+  // ------------------------------------------------------------------
+  // Drill-down: clic en una barra/segmento/celda abre el detalle
+  // documento a documento que compone ese valor (ver GET /kpis/detalle).
+  // ------------------------------------------------------------------
+  var modalSeccion = null;  // 'proveedores'/'ingresos', para armar el link de vuelta a gestionar
+
+  function abrirDetalle(extra, titulo, subtitulo){
+    var params = {
+      desde: document.getElementById("f-desde").value,
+      hasta: document.getElementById("f-hasta").value,
+      linea: segVal("f-linea"),
+      base: segVal("f-base")
+    };
+    Object.assign(params, extra);  // extra puede pisar linea (p.ej. clic en el heatmap)
+    modalSeccion = null;
+    if (params.flujo === "ingreso" || params.aging_tipo === "cobrar") modalSeccion = "ingresos";
+    else if (params.flujo === "egreso" || params.aging_tipo === "pagar") modalSeccion = "proveedores";
+    var qs = Object.keys(params).filter(function(k){ return params[k] !== undefined && params[k] !== null && params[k] !== ""; })
+      .map(function(k){ return k + "=" + encodeURIComponent(params[k]); }).join("&");
+    document.getElementById("modal-title").textContent = titulo;
+    document.getElementById("modal-sub").textContent = subtitulo || "";
+    document.getElementById("modal-tbody").innerHTML =
+      "<tr><td colspan='9' style='color:var(--slate)'>Cargando…</td></tr>";
+    document.getElementById("modal-empty").style.display = "none";
+    document.getElementById("modal-total").textContent = "";
+    document.getElementById("modal-count").textContent = "";
+    document.getElementById("modal-overlay").classList.add("on");
+    fetch("/kpis/detalle?" + qs).then(function(r){
+      if (r.status === 401) { location.href = "/"; return null; }
+      return r.json();
+    }).then(function(d){ if (d) pintarDetalle(d); }).catch(function(e){
+      document.getElementById("modal-tbody").innerHTML =
+        "<tr><td colspan='9'>Error: " + esc(String(e)) + "</td></tr>";
+    });
+  }
+
+  function filaDetalleHtml(f){
+    var link = "";
+    if (f.rendicion_id) link = "/pagos/rendiciones/" + f.rendicion_id;
+    else if (f.codigo_sii && modalSeccion) link = "/pagos/" + modalSeccion + "/" + encodeURIComponent(f.codigo_sii) + "?volver=1";
+    var doc = esc(f.documento || "—");
+    if (link) doc = "<a href='" + link + "' target='_blank'>" + doc + "</a>";
+    return "<tr>" +
+      "<td>" + esc(f.fecha || "—") + "</td>" +
+      "<td class='wrap'>" + doc + "</td>" +
+      "<td>" + esc(f.folio || "—") + "</td>" +
+      "<td class='wrap'>" + esc(f.contraparte || "—") + "</td>" +
+      "<td>" + esc(f.rut || "—") + "</td>" +
+      "<td>" + esc(f.centro || "—") + "</td>" +
+      "<td style='text-align:right'>" + clp(f.monto) + "</td>" +
+      "<td style='text-align:right;color:var(--slate)'>" + (f.monto_total != null ? clp(f.monto_total) : "—") + "</td>" +
+      "<td>" + esc(f.estado || "—") + "</td>" +
+    "</tr>";
+  }
+
+  function pintarDetalle(d){
+    var tbody = document.getElementById("modal-tbody");
+    if (!d.filas.length){
+      tbody.innerHTML = "";
+      document.getElementById("modal-empty").style.display = "block";
+    } else {
+      document.getElementById("modal-empty").style.display = "none";
+      tbody.innerHTML = d.filas.map(filaDetalleHtml).join("");
+    }
+    document.getElementById("modal-total").textContent = clp(d.total);
+    document.getElementById("modal-count").textContent = d.filas.length + " documento(s)";
+  }
+
+  function cerrarModal(){ document.getElementById("modal-overlay").classList.remove("on"); }
+  document.getElementById("modal-close").addEventListener("click", cerrarModal);
+  document.getElementById("modal-overlay").addEventListener("click", function(e){
+    if (e.target.id === "modal-overlay") cerrarModal();
+  });
+  document.addEventListener("keydown", function(e){ if (e.key === "Escape") cerrarModal(); });
+
+  function cursorEnHover(evt, elementos){ evt.native.target.style.cursor = elementos.length ? "pointer" : "default"; }
+
   function gSerie(d){
     destruir("serie");
     document.getElementById("sub-serie").textContent =
@@ -194,7 +327,18 @@
         { type:"line", label:"Neto", data:neto, borderColor:SNOW, backgroundColor:SNOW, tension:.25, pointRadius:3 }
       ]},
       options: { maintainAspectRatio:false, scales:{ y:ejeMonto, x:{grid:{display:false}} },
-                 plugins:{ tooltip:tipMonto, legend:{position:"bottom"} } }
+                 plugins:{ tooltip:tipMonto, legend:{position:"bottom"} },
+                 onHover: cursorEnHover,
+                 onClick: function(evt, elementos){
+                   if (!elementos.length) return;
+                   var el = elementos[0];
+                   if (el.datasetIndex === 2) return;  // línea de Neto: no es una cifra propia, no hay drill-down
+                   var mes = d.meses[el.index];
+                   var flujo = el.datasetIndex === 0 ? "ingreso" : "egreso";
+                   abrirDetalle({ flujo: flujo, mes: mes },
+                     (flujo === "ingreso" ? "Ingresos" : "Egresos") + " · " + mes,
+                     "Base " + d.base + (d.linea ? " · línea " + d.linea : " · todas las líneas"));
+                 } }
     });
   }
 
@@ -212,7 +356,17 @@
       })},
       options:{ maintainAspectRatio:false,
         scales:{ x:{stacked:true, grid:{display:false}}, y:Object.assign({stacked:true}, ejeMonto) },
-        plugins:{ tooltip:tipMonto, legend:{position:"bottom", labels:{boxWidth:10}} } }
+        plugins:{ tooltip:tipMonto, legend:{position:"bottom", labels:{boxWidth:10}} },
+        onHover: cursorEnHover,
+        onClick: function(evt, elementos){
+          if (!elementos.length) return;
+          var el = elementos[0];
+          var categoria = cats[el.datasetIndex];
+          var mes = d.meses[el.index];
+          var catLabel = categoria === "SIN" ? "Sin imputar" : categoria + " · " + (d.nombres_categorias[categoria] || categoria);
+          abrirDetalle({ flujo:"egreso", mes:mes, categoria:categoria }, "Gasto " + catLabel + " · " + mes,
+            "Base " + d.base + (d.linea ? " · línea " + d.linea : " · todas las líneas"));
+        } }
     });
   }
 
@@ -231,7 +385,15 @@
           tooltip:{ callbacks:{ label:function(c){
             var tot = c.dataset.data.reduce(function(a,b){return a+b;},0);
             return c.label + ": " + clp(c.parsed) + " (" + Math.round(c.parsed*100/tot) + "%)";
-          }}}}}
+          }}}},
+        onHover: cursorEnHover,
+        onClick: function(evt, elementos){
+          if (!elementos.length) return;
+          var par = pares[elementos[0].index];
+          var catLabel = par[0] === "SIN" ? "Sin imputar" : par[0] + " · " + (d.nombres_categorias[par[0]] || par[0]);
+          abrirDetalle({ flujo:"ingreso", categoria:par[0] }, "Ingresos " + catLabel,
+            "Rango completo · base " + d.base + (d.linea ? " · línea " + d.linea : " · todas las líneas"));
+        } }
     });
   }
 
@@ -244,15 +406,27 @@
     var html = "<table class='heat'><tr><th></th>" + cats.map(function(c){ return "<th title='"+(d.nombres_categorias[c]||c)+"'>"+c+"</th>"; }).join("") + "</tr>";
     d.heatmap.lineas.forEach(function(l, i){
       html += "<tr><th style='text-align:right'>"+l+"</th>";
-      m[i].forEach(function(v){
+      m[i].forEach(function(v, j){
         var t = max ? v / max : 0;
         var bg = "rgba(0,148,6," + (t === 0 ? 0.04 : (0.12 + t * 0.78)).toFixed(2) + ")";
-        html += "<td style='background:"+bg+"' title='"+clp(v)+"'>" + (v ? clpCorto(v).replace("$","") : "·") + "</td>";
+        var cls = v > 0 ? "heat-cell" : "";
+        html += "<td class='" + cls + "' data-linea='" + l + "' data-cat='" + cats[j] +
+          "' style='background:" + bg + "' title='" + clp(v) + "'>" + (v ? clpCorto(v).replace("$","") : "·") + "</td>";
       });
       html += "</tr>";
     });
     html += "</table>";
     document.getElementById("heatmap").innerHTML = html;
+    document.querySelectorAll("#heatmap .heat-cell").forEach(function(td){
+      td.addEventListener("click", function(){
+        var linea = td.dataset.linea, cat = td.dataset.cat;
+        var flujoActual = segVal("f-heat");
+        var catLabel = cat + " · " + (d.nombres_categorias[cat] || cat);
+        abrirDetalle({ flujo: flujoActual === "gasto" ? "egreso" : "ingreso", linea: linea, categoria: cat },
+          (flujoActual === "gasto" ? "Gasto " : "Ingreso ") + linea + " · " + catLabel,
+          "Rango completo · base " + d.base);
+      });
+    });
   }
 
   function gCaja(d){
@@ -285,7 +459,17 @@
         { label:"Por pagar", data:kc.map(function(k){ return d.aging.pagar[k]; }), backgroundColor:"rgba(231,76,60,.75)", borderRadius:3 }
       ]},
       options:{ maintainAspectRatio:false, scales:{ y:ejeMonto, x:{grid:{display:false}} },
-        plugins:{ tooltip:tipMonto, legend:{position:"bottom"} } }
+        plugins:{ tooltip:tipMonto, legend:{position:"bottom"} },
+        onHover: cursorEnHover,
+        onClick: function(evt, elementos){
+          if (!elementos.length) return;
+          var el = elementos[0];
+          var tipo = el.datasetIndex === 0 ? "cobrar" : "pagar";
+          var bucket = kc[el.index];
+          abrirDetalle({ aging_tipo:tipo, aging_bucket:bucket },
+            (tipo === "cobrar" ? "Por cobrar" : "Por pagar") + " · " + labs[el.index],
+            (d.linea ? "Línea " + d.linea : "Todas las líneas") + " · foto de hoy");
+        } }
     });
   }
 

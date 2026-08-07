@@ -1579,6 +1579,225 @@ def _cat(centro: str) -> str:
     return centro.partition("-")[2] if centro and "-" in centro else ""
 
 
+def _saldos_pendientes_con_dias(conn: sqlite3.Connection, tipo: str, hoy: str) -> list[dict]:
+    """Facturas de `tipo` ('venta'/'compra') con saldo > 0: cada una con su
+    detalle de centros (prorrateado SOBRE EL SALDO, no el total del
+    documento) y los días transcurridos desde su fecha tope (o de emisión, si
+    no tiene tope) hasta `hoy`. Fuente única para el aging agregado
+    (datos_kpis) y el detalle documento a documento (detalle_aging): ambos
+    tienen que sumar exacto, así que comparten esta consulta y el corte en
+    tramos de _bucket_de en vez de reimplementar el mismo criterio dos veces.
+    """
+    from datetime import date
+    marcadores = ",".join("?" * len(TIPOS_NO_PAGABLES))
+    filas = conn.execute(
+        f"""
+        SELECT f.id, f.documento, f.folio, f.razon_social, f.rut_contraparte,
+               f.codigo_sii, f.total, f.centro_costo,
+               COALESCE(f.fecha_pago_tope, f.fecha_emision) AS tope,
+               f.total - COALESCE((SELECT SUM(p.monto) FROM pagos p
+                                   WHERE p.factura_id = f.id), 0) AS saldo
+        FROM facturas f
+        WHERE f.tipo = ? AND f.anulada_por IS NULL AND f.fecha_reclamo IS NULL
+          AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
+        """,
+        (tipo, *TIPOS_NO_PAGABLES),
+    ).fetchall()
+    filas = [f for f in filas if (f["saldo"] or 0) > 0]
+    det = _detalle_por_centro(conn, filas, "saldo")
+    h = date.fromisoformat(hoy)
+    out = []
+    for x in det:
+        try:
+            dias = (h - date.fromisoformat(x["fila"]["tope"])).days
+        except (TypeError, ValueError):
+            dias = 0
+        out.append({"fila": x["fila"], "detalle": x["detalle"], "dias": dias})
+    return out
+
+
+def _bucket_de(dias: int) -> str:
+    """Tramo de aging al que corresponden `dias` transcurridos desde la
+    fecha tope. Único lugar donde se definen los cortes (0/30/60/90) para que
+    el agregado y el detalle documento a documento nunca puedan desalinearse."""
+    if dias <= 0:
+        return "por_vencer"
+    if dias <= 30:
+        return "d0_30"
+    if dias <= 60:
+        return "d31_60"
+    if dias <= 90:
+        return "d61_90"
+    return "d90"
+
+
+def _etiqueta_centro(detalle: list[tuple[str, int]], total_ref: int) -> str:
+    """Etiqueta legible de un detalle de centros para mostrar en una fila de
+    drill-down: el centro solo si es único, o "LINEA-CAT NN% / ..." si el
+    documento está distribuido (mismo formato que _SQL_CENTRO_MULTI, para que
+    se vea igual que en el resto de la app)."""
+    if not detalle:
+        return "Sin imputar"
+    if len(detalle) == 1:
+        return detalle[0][0] or "Sin imputar"
+    ref = total_ref or sum(m for _, m in detalle) or 1
+    return " / ".join(f"{c} {round(m * 100 / ref)}%" for c, m in sorted(detalle))
+
+
+def _matches_filtro(centro: str | None, linea: str, categoria: str | None,
+                    cats_conocidas: set[str]) -> bool:
+    """True si `centro` ('LINEA-CAT' o vacío) cae dentro del filtro de
+    línea+categoría con que se armó un gráfico de /kpis. Replica exactamente
+    la lógica de filtrado de datos_kpis (mismo `pref`/mismo criterio de SIN)
+    para que detalle_documentos() liste justo los documentos que componen la
+    cifra en la que se hizo clic — ni uno más, ni uno menos."""
+    c = centro or ""
+    if linea and not c.startswith(linea + "-"):
+        return False
+    if categoria is None:
+        return True
+    cat = _cat(c)
+    if categoria == "SIN":
+        if linea:
+            return cat not in cats_conocidas  # ver nota en datos_kpis: casi nunca ocurre con línea fija
+        return c == "" or cat not in cats_conocidas
+    return cat == categoria
+
+
+def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: str,
+                       base: str, flujo: str, mes: str | None = None,
+                       categoria: str | None = None) -> list[dict]:
+    """Documentos (facturas/boletas + rendiciones, o movimientos de caja) que
+    componen una cifra mostrada en /kpis: una barra de la serie mensual, un
+    segmento del gasto por categoría, una porción del mix de ingresos, una
+    celda del heatmap. La suma de `monto` en el resultado da EXACTO el valor
+    en que se hizo clic (mismo prorrateo que datos_kpis vía _matches_filtro).
+
+    `mes` (YYYY-MM) acota a un mes puntual — lo usan los gráficos por mes
+    (serie, gasto por categoría); sin él, se usa todo el rango desde/hasta
+    (mix, heatmap, que son del período completo). `categoria` acota a una
+    categoría del catálogo, o 'SIN' para sin imputar; sin ella, incluye
+    todas (clic en la serie de ingresos/egresos).
+
+    Cada fila trae, además del monto y el total del documento completo (por
+    si está pagado/imputado solo en parte), lo necesario para armar un link
+    de vuelta a la gestión: `codigo_sii` (factura) o `rendicion_id`.
+    """
+    from . import centros as _centros
+    cats = {c for c, _ in (_centros.CATEGORIAS_GASTO if flujo == "egreso" else _centros.CATEGORIAS_INGRESO)}
+    d1, d2 = (f"{mes}-01", f"{mes}-31") if mes else (desde, hasta)
+    filas: list[dict] = []
+
+    if base == "caja":
+        tipo_mov = "Ingreso" if flujo == "ingreso" else "Egreso"
+        for m in movimientos_en_rango(conn, d1, d2):
+            if m["flujo"] != tipo_mov:
+                continue
+            monto = sum(v for c, v in m["centros_detalle"] if _matches_filtro(c, linea, categoria, cats))
+            if not monto:
+                continue
+            documento = folio = contraparte = rut = estado = codigo_sii = rendicion_id = None
+            monto_total = m["monto"]
+            if m["origen"] == "factura":
+                f = conn.execute(
+                    "SELECT documento, folio, razon_social, rut_contraparte, estado, total "
+                    "FROM facturas WHERE codigo_sii = ?", (m["ref"],),
+                ).fetchone()
+                if f:
+                    documento, folio = f["documento"], f["folio"]
+                    contraparte, rut, estado = f["razon_social"], f["rut_contraparte"], f["estado"]
+                    monto_total = f["total"]
+                codigo_sii = m["ref"]
+            elif m["origen"] == "rendicion":
+                r = conn.execute("SELECT nombre FROM rendiciones WHERE id = ?", (m["ref"],)).fetchone()
+                documento = f"Rendición {codigo_rendicion(m['ref'])}"
+                contraparte = r["nombre"] if r else None
+                rendicion_id = m["ref"]
+            else:
+                documento = m["descripcion"] or "Movimiento manual"
+            filas.append({
+                "fecha": m["fecha"], "documento": documento or m["descripcion"], "folio": folio,
+                "contraparte": contraparte, "rut": rut, "centro": m["centro"] or "Sin imputar",
+                "monto": monto, "monto_total": monto_total, "estado": estado,
+                "codigo_sii": codigo_sii, "rendicion_id": rendicion_id, "origen": m["origen"],
+            })
+        filas.sort(key=lambda x: x["fecha"] or "")
+        return filas
+
+    # ---- devengado
+    tipo = "venta" if flujo == "ingreso" else "compra"
+    marcadores = ",".join("?" * len(TIPOS_NO_PAGABLES))
+    facts = conn.execute(
+        f"""SELECT id, documento, folio, razon_social, rut_contraparte, codigo_sii,
+                   fecha_emision, total, centro_costo, estado
+            FROM facturas
+            WHERE tipo = ? AND fecha_emision >= ? AND fecha_emision <= ?
+              AND anulada_por IS NULL AND fecha_reclamo IS NULL
+              AND (tipo_dte IS NULL OR tipo_dte NOT IN ({marcadores}))""",
+        (tipo, d1, d2, *TIPOS_NO_PAGABLES),
+    ).fetchall()
+    for x in _detalle_por_centro(conn, facts, "total"):
+        monto = sum(v for c, v in x["detalle"] if _matches_filtro(c, linea, categoria, cats))
+        if not monto:
+            continue
+        f = x["fila"]
+        filas.append({
+            "fecha": f["fecha_emision"], "documento": f["documento"], "folio": f["folio"],
+            "contraparte": f["razon_social"], "rut": f["rut_contraparte"],
+            "centro": _etiqueta_centro(x["detalle"], f["total"]),
+            "monto": monto, "monto_total": f["total"], "estado": f["estado"],
+            "codigo_sii": f["codigo_sii"], "rendicion_id": None, "origen": "factura",
+        })
+
+    if flujo == "egreso":
+        for r in conn.execute(
+            """SELECT r.id AS rid, r.nombre, r.fecha, i.centro_costo AS centro,
+                      i.monto AS monto, i.descripcion, i.numero_doc
+               FROM rendiciones r JOIN rendicion_items i ON i.rendicion_id = r.id
+               WHERE r.fecha >= ? AND r.fecha <= ?""",
+            (d1, d2),
+        ).fetchall():
+            if not _matches_filtro(r["centro"], linea, categoria, cats):
+                continue
+            filas.append({
+                "fecha": r["fecha"],
+                "documento": f"Rendición {codigo_rendicion(r['rid'])} · {(r['descripcion'] or '').strip()}"[:80],
+                "folio": r["numero_doc"], "contraparte": r["nombre"], "rut": None,
+                "centro": r["centro"] or "Sin imputar", "monto": r["monto"], "monto_total": r["monto"],
+                "estado": None, "codigo_sii": None, "rendicion_id": r["rid"], "origen": "rendicion",
+            })
+
+    filas.sort(key=lambda x: x["fecha"] or "")
+    return filas
+
+
+def detalle_aging(conn: sqlite3.Connection, tipo: str, bucket: str, linea: str,
+                  hoy: str | None = None) -> list[dict]:
+    """Documento a documento del tramo de aging en que se hizo clic (ver
+    datos_kpis / _saldos_pendientes_con_dias): mismo criterio y mismos
+    tramos, así la suma calza exacto con el número agregado."""
+    from datetime import date
+    hoy = hoy or date.today().isoformat()
+    filas = []
+    for x in _saldos_pendientes_con_dias(conn, tipo, hoy):
+        if _bucket_de(x["dias"]) != bucket:
+            continue
+        monto = _suma_linea(x["detalle"], linea)
+        if not monto:
+            continue
+        f = x["fila"]
+        filas.append({
+            "fecha": f["tope"], "documento": f["documento"], "folio": f["folio"],
+            "contraparte": f["razon_social"], "rut": f["rut_contraparte"],
+            "centro": _etiqueta_centro(x["detalle"], f["saldo"]),
+            "monto": monto, "monto_total": f["total"], "estado": None,
+            "codigo_sii": f["codigo_sii"], "rendicion_id": None, "origen": "factura",
+            "dias": x["dias"],
+        })
+    filas.sort(key=lambda r: r["dias"], reverse=True)
+    return filas
+
+
 def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
                linea: str = "", base: str = "devengado",
                hoy: str | None = None) -> dict:
@@ -1662,42 +1881,16 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
             mix_ing[cat if cat in mix_ing else "SIN"] += m
 
     # ---------- 5.6 aging de saldos (foto de HOY, no del rango)
+    # La fuente (_saldos_pendientes_con_dias) y el corte en tramos (_bucket_de)
+    # son funciones de módulo, compartidas con detalle_aging(): así el drill-down
+    # documento a documento SIEMPRE suma exacto contra el número agregado acá
+    # (mismo criterio, una sola vez escrito).
     def _aging(tipo: str) -> dict:
-        marcadores = ",".join("?" * len(TIPOS_NO_PAGABLES))
-        filas = conn.execute(
-            f"""
-            SELECT f.id, f.total, f.centro_costo,
-                   COALESCE(f.fecha_pago_tope, f.fecha_emision) AS tope,
-                   f.total - COALESCE((SELECT SUM(p.monto) FROM pagos p
-                                       WHERE p.factura_id = f.id), 0) AS saldo
-            FROM facturas f
-            WHERE f.tipo = ? AND f.anulada_por IS NULL AND f.fecha_reclamo IS NULL
-              AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
-            """,
-            (tipo, *TIPOS_NO_PAGABLES),
-        ).fetchall()
-        filas = [f for f in filas if (f["saldo"] or 0) > 0]
-        det = _detalle_por_centro(conn, filas, "saldo")
         buckets = {"por_vencer": 0, "d0_30": 0, "d31_60": 0, "d61_90": 0, "d90": 0}
-        h = date.fromisoformat(hoy)
-        for x in det:
+        for x in _saldos_pendientes_con_dias(conn, tipo, hoy):
             monto = _suma_linea(x["detalle"], linea)
-            if not monto:
-                continue
-            try:
-                dias = (h - date.fromisoformat(x["fila"]["tope"])).days
-            except (TypeError, ValueError):
-                dias = 0
-            if dias <= 0:
-                buckets["por_vencer"] += monto
-            elif dias <= 30:
-                buckets["d0_30"] += monto
-            elif dias <= 60:
-                buckets["d31_60"] += monto
-            elif dias <= 90:
-                buckets["d61_90"] += monto
-            else:
-                buckets["d90"] += monto
+            if monto:
+                buckets[_bucket_de(x["dias"])] += monto
         return buckets
 
     aging = {"cobrar": _aging("venta"), "pagar": _aging("compra")}
