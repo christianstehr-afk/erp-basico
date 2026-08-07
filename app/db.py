@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS facturas (
     descripcion   TEXT,                        -- nota libre de la gestión del pago/cobro (una por factura)
     anulada_por   TEXT,                        -- codigo_sii de la Nota de Crédito que anuló esta factura (solo ventas)
     ref_procesada INTEGER DEFAULT 0,           -- 1 = ya se revisó el PDF de esta NC buscando "ANULA DOCUMENTO..."
+    centro_costo  TEXT,                        -- centro de costo/ingreso "LINEA-CAT" (ver centros.py); NULL = sin imputar
     creado_en     TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(tipo, tipo_dte, folio, rut_contraparte)
 );
@@ -168,6 +169,7 @@ CREATE TABLE IF NOT EXISTS rendicion_items (
     descripcion   TEXT NOT NULL,
     numero_doc    TEXT,                      -- número de boleta o factura
     monto         INTEGER NOT NULL DEFAULT 0,
+    centro_costo  TEXT,                      -- centro de costo "LINEA-CAT" (ver centros.py); NULL = sin imputar
     FOREIGN KEY (rendicion_id) REFERENCES rendiciones(id)
 );
 
@@ -226,6 +228,7 @@ CREATE TABLE IF NOT EXISTS movimientos_cc (
     monto             INTEGER NOT NULL,
     origen            TEXT NOT NULL,              -- 'factura' | 'rendicion' | 'manual'
     ref               TEXT,                        -- codigo_sii (factura) o código de rendición, solo para mostrar/enlazar
+    centro_costo      TEXT,                        -- solo filas manuales: centro "LINEA-CAT" (las automáticas lo heredan de su factura/rendición al consultar)
     pago_id           INTEGER,                     -- FK pagos.id, si origen='factura'
     rendicion_pago_id INTEGER,                     -- FK rendicion_pagos.id, si origen='rendicion'
     creado_en         TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -276,10 +279,17 @@ def _migrar(conn: sqlite3.Connection) -> None:
         # al momento de verlo (ver sii_bhe.obtener_pdf_bytes). En facturas
         # normales (DTE) esta columna queda NULL.
         "pdf_href_bhe": "TEXT",
+        # Centro de costo/ingreso "LINEA-CAT" (ver centros.py).
+        "centro_costo": "TEXT",
     }
     for col, ddl in nuevas.items():
         if col not in existentes:
             conn.execute(f"ALTER TABLE facturas ADD COLUMN {col} {ddl}")
+    # centro_costo en rendicion_items y movimientos_cc (BDs anteriores).
+    for tabla in ("rendicion_items", "movimientos_cc"):
+        cols_t = {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}
+        if cols_t and "centro_costo" not in cols_t:
+            conn.execute(f"ALTER TABLE {tabla} ADD COLUMN centro_costo TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_facturas_codigo ON facturas(codigo_sii)")
     # pagos.rendicion_id: pago de factura hecho vía una rendición
     cols_pagos = {r[1] for r in conn.execute("PRAGMA table_info(pagos)")}
@@ -428,7 +438,7 @@ def facturas_con_pago(conn: sqlite3.Connection, tipo: str = "compra") -> list[sq
         f"""
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo,
-               f.pdf_path, f.descripcion, f.anulada_por,
+               f.pdf_path, f.descripcion, f.anulada_por, f.centro_costo,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.tipo = ?
@@ -447,7 +457,7 @@ def facturas_con_pago_en_rango(conn: sqlite3.Connection, tipo: str, desde: str, 
         f"""
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo,
-               f.pdf_path, f.descripcion, f.anulada_por,
+               f.pdf_path, f.descripcion, f.anulada_por, f.centro_costo,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.tipo = ?
@@ -465,7 +475,7 @@ def factura_pago_por_codigo(conn: sqlite3.Connection, codigo: str) -> sqlite3.Ro
         """
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo, f.pdf_path,
-               f.descripcion, f.anulada_por, f.pdf_href_bhe,
+               f.descripcion, f.anulada_por, f.pdf_href_bhe, f.centro_costo,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
         WHERE f.codigo_sii = ?
@@ -484,6 +494,15 @@ def set_descripcion(conn: sqlite3.Connection, codigo: str, descripcion: str) -> 
     """Guarda la nota de la gestión (una por factura, no por pago parcial)."""
     conn.execute(
         "UPDATE facturas SET descripcion = ? WHERE codigo_sii = ?", (descripcion, codigo)
+    )
+
+
+def set_centro_costo(conn: sqlite3.Connection, codigo: str, centro: str | None) -> None:
+    """Imputa la factura a un centro de costo/ingreso ('LINEA-CAT', ver
+    centros.py). Vacío/None = quitar la imputación."""
+    conn.execute(
+        "UPDATE facturas SET centro_costo = ? WHERE codigo_sii = ?",
+        (centro or None, codigo),
     )
 
 
@@ -622,9 +641,10 @@ def crear_rendicion(conn: sqlite3.Connection, nombre: str, fecha: str,
     rid = cur.lastrowid
     for it in items:
         conn.execute(
-            "INSERT INTO rendicion_items (rendicion_id, descripcion, numero_doc, monto) "
-            "VALUES (?, ?, ?, ?)",
-            (rid, it["descripcion"], it.get("numero_doc") or None, int(it["monto"])),
+            "INSERT INTO rendicion_items (rendicion_id, descripcion, numero_doc, monto, centro_costo) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (rid, it["descripcion"], it.get("numero_doc") or None, int(it["monto"]),
+             it.get("centro_costo") or None),
         )
     return rid
 
@@ -675,10 +695,21 @@ def rendicion_por_id(conn: sqlite3.Connection, rid: int) -> sqlite3.Row | None:
 
 def items_de_rendicion(conn: sqlite3.Connection, rid: int) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT id, descripcion, numero_doc, monto FROM rendicion_items "
+        "SELECT id, descripcion, numero_doc, monto, centro_costo FROM rendicion_items "
         "WHERE rendicion_id = ? ORDER BY id ASC",
         (rid,),
     ).fetchall()
+
+
+def set_centro_item(conn: sqlite3.Connection, rid: int, item_id: int,
+                    centro: str | None) -> bool:
+    """Imputa un ítem de rendición a un centro de costo ('LINEA-CAT').
+    Vacío/None = quitar la imputación. Devuelve True si actualizó algo."""
+    cur = conn.execute(
+        "UPDATE rendicion_items SET centro_costo = ? WHERE id = ? AND rendicion_id = ?",
+        (centro or None, item_id, rid),
+    )
+    return cur.rowcount > 0
 
 
 def adjuntos_de_rendicion(conn: sqlite3.Connection, rid: int) -> list[sqlite3.Row]:
@@ -768,7 +799,8 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
         """
         SELECT p.fecha AS fecha, p.direccion AS direccion, p.monto AS monto,
                f.tipo AS ftipo, f.documento AS documento, f.folio AS folio,
-               f.razon_social AS razon_social, f.codigo_sii AS codigo_sii
+               f.razon_social AS razon_social, f.codigo_sii AS codigo_sii,
+               f.centro_costo AS centro_costo
         FROM pagos p
         JOIN facturas f ON f.id = p.factura_id
         WHERE p.fecha >= ? AND p.fecha <= ?
@@ -792,13 +824,17 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
             "monto": p["monto"],
             "origen": "factura",
             "ref": p["codigo_sii"],
+            "centro": p["centro_costo"] or "",
         })
 
     # Pagos de rendiciones (siempre egreso).
     for p in conn.execute(
         """
         SELECT rp.fecha AS fecha, rp.monto AS monto,
-               r.id AS rid, r.nombre AS nombre
+               r.id AS rid, r.nombre AS nombre,
+               (SELECT GROUP_CONCAT(DISTINCT i.centro_costo)
+                FROM rendicion_items i
+                WHERE i.rendicion_id = r.id AND i.centro_costo IS NOT NULL) AS centros
         FROM rendicion_pagos rp
         JOIN rendiciones r ON r.id = rp.rendicion_id
         WHERE rp.fecha >= ? AND rp.fecha <= ?
@@ -812,6 +848,8 @@ def movimientos_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> li
             "monto": p["monto"],
             "origen": "rendicion",
             "ref": p["rid"],
+            # Centros de los ítems de la rendición (puede haber más de uno).
+            "centro": (p["centros"] or "").replace(",", " / "),
         })
 
     # Orden estable: por fecha; a igual fecha, ingresos antes que egresos.
@@ -919,9 +957,29 @@ def sincronizar_movimientos_cc(conn: sqlite3.Connection) -> None:
 
 
 def movimientos_cc_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) -> list[sqlite3.Row]:
+    """Movimientos CC del rango con su centro de costo/ingreso calculado en
+    vivo: las filas de factura lo heredan de la factura, las de rendición
+    juntan los centros de sus ítems, y las manuales usan su propia columna.
+    (Así, cambiar el centro de una factura ya imputada se refleja al tiro acá,
+    sin re-sincronizar nada.)"""
     return conn.execute(
-        "SELECT * FROM movimientos_cc WHERE fecha >= ? AND fecha <= ? "
-        "ORDER BY fecha ASC, id ASC",
+        """
+        SELECT m.*,
+               COALESCE(
+                   f.centro_costo,
+                   REPLACE((SELECT GROUP_CONCAT(DISTINCT i.centro_costo)
+                            FROM rendicion_items i
+                            WHERE i.rendicion_id = rp.rendicion_id
+                              AND i.centro_costo IS NOT NULL), ',', ' / '),
+                   m.centro_costo, ''
+               ) AS centro
+        FROM movimientos_cc m
+        LEFT JOIN pagos p ON p.id = m.pago_id
+        LEFT JOIN facturas f ON f.id = p.factura_id
+        LEFT JOIN rendicion_pagos rp ON rp.id = m.rendicion_pago_id
+        WHERE m.fecha >= ? AND m.fecha <= ?
+        ORDER BY m.fecha ASC, m.id ASC
+        """,
         (desde, hasta),
     ).fetchall()
 
@@ -947,23 +1005,25 @@ def movimientos_cc_manuales(conn: sqlite3.Connection, flujo: str) -> list[sqlite
 
 
 def agregar_movimiento_manual(conn: sqlite3.Connection, fecha: str, flujo: str,
-                              descripcion: str, monto: int) -> int:
+                              descripcion: str, monto: int,
+                              centro: str | None = None) -> int:
     cur = conn.execute(
-        "INSERT INTO movimientos_cc (fecha, flujo, descripcion, monto, origen) "
-        "VALUES (?, ?, ?, ?, 'manual')",
-        (fecha, flujo, descripcion, monto),
+        "INSERT INTO movimientos_cc (fecha, flujo, descripcion, monto, origen, centro_costo) "
+        "VALUES (?, ?, ?, ?, 'manual', ?)",
+        (fecha, flujo, descripcion, monto, centro or None),
     )
     return cur.lastrowid
 
 
 def editar_movimiento_manual(conn: sqlite3.Connection, mid: int, fecha: str, flujo: str,
-                             descripcion: str, monto: int) -> bool:
+                             descripcion: str, monto: int,
+                             centro: str | None = None) -> bool:
     """Solo actualiza si la fila es manual (nunca toca una fila automática).
     Devuelve True si se actualizó algo."""
     cur = conn.execute(
-        "UPDATE movimientos_cc SET fecha = ?, flujo = ?, descripcion = ?, monto = ? "
-        "WHERE id = ? AND origen = 'manual'",
-        (fecha, flujo, descripcion, monto, mid),
+        "UPDATE movimientos_cc SET fecha = ?, flujo = ?, descripcion = ?, monto = ?, "
+        "centro_costo = ? WHERE id = ? AND origen = 'manual'",
+        (fecha, flujo, descripcion, monto, centro or None, mid),
     )
     return cur.rowcount > 0
 

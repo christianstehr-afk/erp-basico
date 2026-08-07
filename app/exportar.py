@@ -86,7 +86,7 @@ def construir_excel(movimientos: list[dict], desde: str, hasta: str) -> bytes:
     ws["A2"] = f"Rango: {desde} a {hasta}"
     ws["A2"].font = Font(name="Calibri", size=10, color="FF666666")
 
-    encabezados = ["Fecha", "Ingreso/Egreso", "Descripción", "Monto"]
+    encabezados = ["Fecha", "Ingreso/Egreso", "Descripción", "Centro", "Monto"]
     fila_head = 4
     borde = Border(bottom=Side(style="thin", color="FFDDDDDD"))
     for col, texto in enumerate(encabezados, start=1):
@@ -108,33 +108,72 @@ def construir_excel(movimientos: list[dict], desde: str, hasta: str) -> bytes:
         cflujo = ws.cell(row=fila, column=2, value=m["flujo"])
         cflujo.font = Font(bold=True, color=verde if es_ing else rojo)
         ws.cell(row=fila, column=3, value=m["descripcion"])
-        cmonto = ws.cell(row=fila, column=4, value=m["monto"])
+        ws.cell(row=fila, column=4, value=m.get("centro") or "")
+        cmonto = ws.cell(row=fila, column=5, value=m["monto"])
         cmonto.number_format = '"$"#,##0'
         cmonto.alignment = Alignment(horizontal="right")
-        for col in range(1, 5):
+        for col in range(1, 6):
             ws.cell(row=fila, column=col).border = borde
         fila += 1
 
     # Totales.
     fila += 1
-    ws.cell(row=fila, column=3, value="Total ingresos").font = Font(bold=True, color=verde)
-    ci = ws.cell(row=fila, column=4, value=total_ing)
+    ws.cell(row=fila, column=4, value="Total ingresos").font = Font(bold=True, color=verde)
+    ci = ws.cell(row=fila, column=5, value=total_ing)
     ci.number_format = '"$"#,##0'; ci.font = Font(bold=True, color=verde)
     fila += 1
-    ws.cell(row=fila, column=3, value="Total egresos").font = Font(bold=True, color=rojo)
-    ce = ws.cell(row=fila, column=4, value=total_egr)
+    ws.cell(row=fila, column=4, value="Total egresos").font = Font(bold=True, color=rojo)
+    ce = ws.cell(row=fila, column=5, value=total_egr)
     ce.number_format = '"$"#,##0'; ce.font = Font(bold=True, color=rojo)
     fila += 1
-    ws.cell(row=fila, column=3, value="Neto (ingresos − egresos)").font = Font(bold=True, color=tinta)
-    cn = ws.cell(row=fila, column=4, value=total_ing - total_egr)
+    ws.cell(row=fila, column=4, value="Neto (ingresos − egresos)").font = Font(bold=True, color=tinta)
+    cn = ws.cell(row=fila, column=5, value=total_ing - total_egr)
     cn.number_format = '"$"#,##0'; cn.font = Font(bold=True, color=tinta)
-    ws.cell(row=fila, column=3).fill = PatternFill("solid", fgColor=gris)
     ws.cell(row=fila, column=4).fill = PatternFill("solid", fgColor=gris)
+    ws.cell(row=fila, column=5).fill = PatternFill("solid", fgColor=gris)
 
-    anchos = {1: 14, 2: 16, 3: 60, 4: 16}
+    anchos = {1: 14, 2: 16, 3: 55, 4: 14, 5: 16}
     for col, w in anchos.items():
         ws.column_dimensions[get_column_letter(col)].width = w
     ws.freeze_panes = "A5"
+
+    # --- Hoja 2: resumen por centro de costo/ingreso ---------------------
+    # Agrupa los movimientos por su centro ("LINEA-CAT"). Un pago de rendición
+    # con ítems de varios centros aparece con el rótulo combinado ("A / B");
+    # lo no imputado suma en "(sin imputar)".
+    ws2 = wb.create_sheet("Por centro")
+    ws2["A1"] = "Resumen por centro de costo/ingreso"
+    ws2["A1"].font = Font(name="Calibri", size=14, bold=True, color=tinta)
+    ws2["A2"] = f"Rango: {desde} a {hasta}"
+    ws2["A2"].font = Font(name="Calibri", size=10, color="FF666666")
+    for col, texto in enumerate(["Centro", "Ingresos", "Egresos", "Neto"], start=1):
+        c = ws2.cell(row=4, column=col, value=texto)
+        c.font = Font(bold=True, color="FFFFFFFF")
+        c.fill = PatternFill("solid", fgColor=tinta)
+        if col > 1:
+            c.alignment = Alignment(horizontal="right")
+    resumen: dict = {}
+    for m in movimientos:
+        clave = m.get("centro") or "(sin imputar)"
+        ing, egr = resumen.get(clave, (0, 0))
+        if m["flujo"] == "Ingreso":
+            ing += m["monto"]
+        else:
+            egr += m["monto"]
+        resumen[clave] = (ing, egr)
+    fila2 = 5
+    for clave in sorted(resumen, key=lambda k: (k == "(sin imputar)", k)):
+        ing, egr = resumen[clave]
+        ws2.cell(row=fila2, column=1, value=clave)
+        for col, valor in ((2, ing), (3, egr), (4, ing - egr)):
+            c = ws2.cell(row=fila2, column=col, value=valor)
+            c.number_format = '"$"#,##0'
+            c.alignment = Alignment(horizontal="right")
+        for col in range(1, 5):
+            ws2.cell(row=fila2, column=col).border = borde
+        fila2 += 1
+    for col, w in {1: 26, 2: 16, 3: 16, 4: 16}.items():
+        ws2.column_dimensions[get_column_letter(col)].width = w
 
     buf = io.BytesIO()
     wb.save(buf)

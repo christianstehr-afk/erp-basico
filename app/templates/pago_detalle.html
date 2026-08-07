@@ -91,6 +91,28 @@
       </form>
     </div>
 
+    <!-- Centro de costo / ingreso (LINEA-CAT, ver centros.py) -->
+    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:20px;background:#0f0f0f">
+      <div class="eyebrow" style="margin-bottom:12px">{{ 'Centro de ingreso' if seccion == 'ingresos' else 'Centro de costo' }}</div>
+      <form method="post" action="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/centro"
+            style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <select name="centro"
+          style="background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:13px;font-family:var(--mono);min-width:260px">
+          <option value="">— Sin imputar —</option>
+          {% for g in centros_grupos %}
+          <optgroup label="{{ g.nombre }} ({{ g.codigo }})">
+            {% for cod, nom in g.opciones %}
+            <option value="{{ cod }}" {% if f['centro_costo'] == cod %}selected{% endif %}>{{ cod }} · {{ nom }}</option>
+            {% endfor %}
+          </optgroup>
+          {% endfor %}
+        </select>
+        <button type="submit"
+          style="background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:var(--radius);font-weight:700;font-size:13px">Guardar</button>
+        <span style="color:var(--slate);font-size:12px">Línea de negocio + categoría, para el resultado por línea.</span>
+      </form>
+    </div>
+
     <!-- Descripción de la gestión (una nota por factura, no por movimiento parcial) -->
     <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:20px;background:#0f0f0f">
       <div class="eyebrow" style="margin-bottom:12px">Descripción</div>

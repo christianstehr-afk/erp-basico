@@ -78,6 +78,7 @@
           <tr style="text-align:left;color:var(--slate);font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.1em">
             <th style="padding:8px 10px">Descripción</th>
             <th style="padding:8px 10px">N° boleta/factura</th>
+            <th style="padding:8px 10px">Centro de costo</th>
             <th style="padding:8px 10px;text-align:right">Monto</th>
           </tr>
         </thead>
@@ -86,6 +87,22 @@
           <tr style="border-top:1px solid #161616">
             <td style="padding:9px 10px">{{ it["descripcion"] }}</td>
             <td style="padding:9px 10px;font-family:var(--mono);color:var(--slate)">{{ it["numero_doc"] or "—" }}</td>
+            <td style="padding:9px 10px">
+              <!-- Se guarda solo al cambiar la opción (onchange) -->
+              <form method="post" action="/pagos/rendiciones/{{ r['id'] }}/item/{{ it['id'] }}/centro" style="display:inline">
+                <select name="centro" onchange="this.form.submit()" title="Centro de costo del ítem"
+                  style="background:#111;border:1px solid #262626;color:var(--snow);padding:6px 8px;border-radius:var(--radius);font-size:12px;font-family:var(--mono);max-width:210px">
+                  <option value="">— Sin imputar —</option>
+                  {% for g in centros_grupos %}
+                  <optgroup label="{{ g.nombre }} ({{ g.codigo }})">
+                    {% for cod, nom in g.opciones %}
+                    <option value="{{ cod }}" {% if it['centro_costo'] == cod %}selected{% endif %}>{{ cod }} · {{ nom }}</option>
+                    {% endfor %}
+                  </optgroup>
+                  {% endfor %}
+                </select>
+              </form>
+            </td>
             <td style="padding:9px 10px;text-align:right;font-family:var(--mono)">${{ "{:,.0f}".format(it["monto"]).replace(",", ".") }}</td>
           </tr>
           {% endfor %}

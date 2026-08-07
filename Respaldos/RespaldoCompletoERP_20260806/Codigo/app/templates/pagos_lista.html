@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERP Básico · {{ cfg.titulo }}</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="https://www.e-auto.global/assets/logos/eauto_logo_new.webp" alt="e-auto">
+      <div class="divider"></div>
+      <span class="tag">ERP Básico</span>
+    </div>
+    <div class="userchip">
+      <span>Conectado al SII · {{ rut }}</span>
+      <form method="post" action="/logout">
+        <button type="submit">Salir</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="head">
+      <div class="eyebrow"><a href="/" style="color:var(--slate)">← Cockpit</a></div>
+      <h1>{{ cfg.titulo }} · {{ anio }}</h1>
+      <p>
+        {{ n_vigentes }} facturas {{ 'emitidas' if seccion == 'ingresos' else 'recibidas' }} ·
+        {{ 'pendiente de cobro' if seccion == 'ingresos' else 'pendiente de pago' }}
+        ${{ "{:,.0f}".format(total_pendiente).replace(",", ".") }} de
+        ${{ "{:,.0f}".format(total_monto).replace(",", ".") }}
+        {% if n_rechazadas %}<span style="color:var(--red)"> · {{ n_rechazadas }} rechazada{{ 's' if n_rechazadas != 1 else '' }} (no incluida{{ 's' if n_rechazadas != 1 else '' }})</span>{% endif %}
+        {% if n_anuladas %}<span style="color:var(--green)"> · {{ n_anuladas }} anulada{{ 's' if n_anuladas != 1 else '' }} (no incluida{{ 's' if n_anuladas != 1 else '' }})</span>{% endif %}
+      </p>
+      <p style="margin-top:10px;font-family:var(--mono);font-size:11px;letter-spacing:.04em">
+        <span style="color:var(--green)">● {{ cfg.estado_ok }}</span>&nbsp;&nbsp;
+        <span style="color:#3b82f6">● Pendiente</span>
+        {% if seccion == 'ingresos' %}&nbsp;&nbsp;<span style="color:var(--red)">● Rechazada</span>&nbsp;&nbsp;<span style="color:var(--green)">● Anulada</span>{% endif %}
+      </p>
+    </div>
+
+    <div style="overflow:auto;border:1px solid #1c1c1c;border-radius:var(--radius)">
+      <table id="tabla-pagos" style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="text-align:left;color:var(--slate);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em">
+            <th class="sortable" data-col="0" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Documento <span class="arrow"></span></th>
+            <th class="sortable" data-col="1" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Folio <span class="arrow"></span></th>
+            <th class="sortable" data-col="2" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">{{ cfg.col_contraparte }} <span class="arrow"></span></th>
+            <th class="sortable" data-col="3" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Descripción <span class="arrow"></span></th>
+            <th class="sortable" data-col="4" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha tope <span class="arrow"></span></th>
+            <th class="sortable" data-col="5" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Monto <span class="arrow"></span></th>
+            <th class="sortable" data-col="6" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">{{ cfg.label_deuda }} <span class="arrow"></span></th>
+            <th class="sortable" data-col="7" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
+            <th style="padding:12px 14px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in filas %}
+          {% set rechazada = f["fecha_reclamo"] %}
+          {% set anulada = f["anulada_por"] %}
+          {% set pagada = f["pagado"] >= f["total"] %}
+          {% set color = 'var(--red)' if rechazada else ('var(--green)' if (pagada or anulada) else '#3b82f6') %}
+          {% set orden_estado = -1 if rechazada else (3 if anulada else (2 if pagada else 1)) %}
+          <tr style="border-top:1px solid #161616{% if rechazada %};color:var(--red){% endif %}">
+            <td style="padding:11px 14px">{{ f["documento"] }}</td>
+            <td data-value="{{ f['folio'] or 0 }}" style="padding:11px 14px;font-family:var(--mono)">
+              {% if f["codigo_sii"] %}
+                <a href="/pdf/{{ f['codigo_sii'] }}" target="_blank" title="Ver PDF de la factura"
+                   style="color:var(--green);border-bottom:1px dotted var(--green)">{{ f["folio"] }}</a>
+              {% else %}{{ f["folio"] }}{% endif %}
+            </td>
+            <td data-value="{{ (f['razon_social'] or '')|lower }}" style="padding:11px 14px">
+              <div>{{ f["razon_social"] }}</div>
+              <div style="font-family:var(--mono);font-size:11px;color:{{ 'var(--red)' if rechazada else 'var(--slate)' }}">{{ f["rut_contraparte"] }}</div>
+            </td>
+            <td data-value="{{ (f['descripcion'] or '')|lower }}" style="padding:11px 14px;max-width:220px">
+              {% if f["descripcion"] %}
+                <span title="{{ f['descripcion'] }}" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f["descripcion"] }}</span>
+              {% else %}<span style="color:var(--slate)">—</span>{% endif %}
+            </td>
+            <td data-value="{{ f['fecha_pago_tope'] or '9999-99-99' }}" style="padding:11px 14px;font-family:var(--mono)">{{ f["fecha_pago_tope"] or "—" }}</td>
+            <td data-value="{{ 0 if anulada else f['total'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono)">{% if anulada %}---{% else %}${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}{% endif %}</td>
+            <td data-value="{{ 0 if anulada else (f['total'] - f['pagado']) }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">{% if anulada %}---{% else %}${{ "{:,.0f}".format(f["total"] - f["pagado"]).replace(",", ".") }}{% endif %}</td>
+            <td data-value="{{ orden_estado }}" style="padding:11px 14px">
+              {% if rechazada %}
+                <span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;background:rgba(255,73,73,.15);color:var(--red)">Rechazada</span>
+              {% elif anulada %}
+                <a href="/pdf/{{ anulada }}" target="_blank" title="Ver PDF de la Nota de Crédito que anuló esta factura"
+                   style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;background:rgba(0,148,6,.15);color:var(--green);border-bottom:1px dotted var(--green)">Anulada</a>
+              {% else %}
+                <span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;
+                  background:{{ 'rgba(0,148,6,.15)' if pagada else 'rgba(59,130,246,.15)' }};color:{{ color }}">
+                  {{ cfg.estado_ok if pagada else 'Pendiente' }}
+                </span>
+              {% endif %}
+            </td>
+            <td style="padding:11px 14px;white-space:nowrap">
+              {% if not rechazada and not anulada %}
+              <a href="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}"
+                 style="display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:6px 12px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700">Gestionar</a>
+              <a href="/pagos/{{ seccion }}/{{ f['codigo_sii'] }}/pdf" target="_blank"
+                 title="Ver PDF de la gestión"
+                 style="display:inline-block;margin-left:6px;font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:6px 10px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--slate);font-weight:700">PDF</a>
+              {% else %}<span style="color:var(--slate)">—</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      var tabla = document.getElementById("tabla-pagos");
+      if (!tabla) return;
+      var tbody = tabla.tBodies[0];
+      var cabeceras = tabla.querySelectorAll("th.sortable");
+
+      function valorCelda(fila, col, tipo) {
+        var celda = fila.children[col];
+        var v = celda.getAttribute("data-value");
+        if (v === null) v = celda.textContent.trim();
+        return tipo === "num" ? parseFloat(v) || 0 : v.toLowerCase();
+      }
+
+      function ordenar(col, tipo, asc) {
+        var filas = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
+        filas.sort(function (a, b) {
+          var va = valorCelda(a, col, tipo), vb = valorCelda(b, col, tipo);
+          if (va < vb) return asc ? -1 : 1;
+          if (va > vb) return asc ? 1 : -1;
+          return 0;
+        });
+        filas.forEach(function (f) { tbody.appendChild(f); });
+      }
+
+      cabeceras.forEach(function (th) {
+        th.addEventListener("click", function () {
+          var col = parseInt(th.getAttribute("data-col"), 10);
+          var tipo = th.getAttribute("data-type");
+          var asc = th.getAttribute("data-dir") !== "asc";
+          cabeceras.forEach(function (o) {
+            o.removeAttribute("data-dir");
+            var fl = o.querySelector(".arrow"); if (fl) fl.textContent = "";
+          });
+          th.setAttribute("data-dir", asc ? "asc" : "desc");
+          var flecha = th.querySelector(".arrow");
+          if (flecha) flecha.textContent = asc ? " ▲" : " ▼";
+          ordenar(col, tipo, asc);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

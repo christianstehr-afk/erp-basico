@@ -122,7 +122,8 @@
             <th class="sortable" data-col="0" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha <span class="arrow"></span></th>
             <th class="sortable" data-col="1" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Ingreso/Egreso <span class="arrow"></span></th>
             <th class="sortable" data-col="2" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Descripción <span class="arrow"></span></th>
-            <th class="sortable" data-col="3" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Monto <span class="arrow"></span></th>
+            <th class="sortable" data-col="3" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Centro <span class="arrow"></span></th>
+            <th class="sortable" data-col="4" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Monto <span class="arrow"></span></th>
           </tr>
         </thead>
         <tbody>
@@ -136,6 +137,9 @@
                 background:{{ 'rgba(0,148,6,.15)' if ing else 'rgba(192,57,43,.15)' }};color:{{ color }}">{{ m["flujo"] }}</span>
             </td>
             <td style="padding:11px 14px">{{ m["descripcion"] }}</td>
+            <td data-value="{{ m['centro'] or '' }}" style="padding:11px 14px">
+              {% if m["centro"] %}<span style="display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700;background:#1c1c1c;color:var(--mist)">{{ m["centro"] }}</span>{% else %}<span style="color:var(--slate)">—</span>{% endif %}
+            </td>
             <td data-value="{{ m['monto'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">${{ "{:,.0f}".format(m["monto"]).replace(",", ".") }}</td>
           </tr>
           {% endfor %}

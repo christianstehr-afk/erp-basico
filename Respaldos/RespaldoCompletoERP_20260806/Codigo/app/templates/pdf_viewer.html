@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERP Básico · {{ documento }} {{ folio }}</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    .viewer-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+    .pdf-frame{width:100%;height:82vh;border:1px solid #1c1c1c;border-radius:var(--radius);background:#fff}
+    .btn-dl{display:inline-block;background:var(--green);color:#fff;border:none;padding:11px 18px;border-radius:var(--radius);font-weight:700;font-size:13px;letter-spacing:.02em;transition:.2s var(--ease)}
+    .btn-dl:hover{background:var(--green-deep)}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="https://www.e-auto.global/assets/logos/eauto_logo_new.webp" alt="e-auto">
+      <div class="divider"></div>
+      <span class="tag">ERP Básico</span>
+    </div>
+    <div class="userchip">
+      <button type="button" id="btn-cerrar">Cerrar</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="viewer-head">
+      <div>
+        <div class="eyebrow">Documento</div>
+        <h1 style="font-size:22px;font-weight:700;margin-top:8px">{{ documento }} · Folio {{ folio }}</h1>
+        <p style="color:var(--slate);font-size:13px;margin-top:6px">{{ razon_social }} · {{ rut_contraparte }}</p>
+      </div>
+    </div>
+
+    <iframe class="pdf-frame" src="/pdf/{{ codigo }}/ver" title="PDF"></iframe>
+  </main>
+  <script>
+    // window.close() solo funciona si la pestaña la abrió un script; si no
+    // (p.ej. target=_blank en móvil), no pasa nada visible, así que hacemos
+    // fallback a "volver atrás" para que el botón siempre haga algo útil.
+    document.getElementById('btn-cerrar').addEventListener('click', function () {
+      window.close();
+      setTimeout(function () {
+        if (!window.closed) {
+          if (window.history.length > 1) window.history.back();
+          else window.location.href = '/';
+        }
+      }, 250);
+    });
+  </script>
+</body>
+</html>

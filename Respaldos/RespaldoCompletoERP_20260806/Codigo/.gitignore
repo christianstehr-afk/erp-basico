@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Base de datos local
+*.db
+*.sqlite3
+data/
+
+# Entorno
+.env
+.env.*
+
+# Sistema
+.DS_Store

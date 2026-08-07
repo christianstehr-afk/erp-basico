@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import db, exportar, sii_bhe, sii_docs, sync
+from . import centros, db, exportar, sii_bhe, sii_docs, sync
 from .sii_client import SIIAuthError, SIIClient, SIISessionExpirada
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -678,6 +678,9 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
             "hoy": date.today().isoformat(), "saldo": (f["total"] - f["pagado"]),
             "error": error, "rendiciones": rendiciones, "rend_asociada": rend_asociada,
             "movs_manuales": movs_manuales,
+            # Catálogo de centros según la sección: proveedores imputa GASTOS,
+            # ingresos imputa INGRESOS (ver centros.py).
+            "centros_grupos": centros.grupos("ingreso" if seccion == "ingresos" else "gasto"),
         },
         status_code=status_code,
     )
@@ -757,6 +760,27 @@ def _guardar_descripcion(request: Request, seccion: str, codigo: str, descripcio
     finally:
         conn.close()
     _log_evento(request, f"Descripción actualizada · {seccion} {codigo}")
+    return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
+
+
+def _guardar_centro(request: Request, seccion: str, codigo: str, centro: str):
+    """Imputa la factura a un centro de costo (proveedores) o de ingreso
+    (ingresos). Vacío = quitar la imputación."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    centro = (centro or "").strip().upper()
+    flujo = "ingreso" if seccion == "ingresos" else "gasto"
+    if centro and not centros.es_valido(centro, flujo):
+        return _render_detalle(request, client, seccion, codigo,
+                               error="Centro de costo inválido.", status_code=400)
+    conn = db.get_conn()
+    try:
+        db.set_centro_costo(conn, codigo, centro)
+        conn.commit()
+    finally:
+        conn.close()
+    _log_evento(request, f"Centro de costo actualizado · {seccion} {codigo} → {centro or '(sin imputar)'}")
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
@@ -1005,6 +1029,11 @@ def proveedores_descripcion(request: Request, codigo: str, descripcion: str = Fo
     return _guardar_descripcion(request, "proveedores", codigo, descripcion)
 
 
+@app.post("/pagos/proveedores/{codigo}/centro")
+def proveedores_centro(request: Request, codigo: str, centro: str = Form("")):
+    return _guardar_centro(request, "proveedores", codigo, centro)
+
+
 @app.post("/pagos/proveedores/{codigo}/pago")
 def proveedores_agregar(request: Request, codigo: str,
                         fecha: str = Form(...), monto: str = Form(...),
@@ -1068,6 +1097,11 @@ def ingresos_fecha_tope(request: Request, codigo: str, fecha_tope: str = Form(..
 @app.post("/pagos/ingresos/{codigo}/descripcion")
 def ingresos_descripcion(request: Request, codigo: str, descripcion: str = Form("")):
     return _guardar_descripcion(request, "ingresos", codigo, descripcion)
+
+
+@app.post("/pagos/ingresos/{codigo}/centro")
+def ingresos_centro(request: Request, codigo: str, centro: str = Form("")):
+    return _guardar_centro(request, "ingresos", codigo, centro)
 
 
 @app.post("/pagos/ingresos/{codigo}/pago")
@@ -1171,6 +1205,7 @@ def _render_rendicion(request: Request, client, rid: int,
             "request": request, "rut": client.rut, "r": r, "items": items,
             "adjuntos": adjuntos, "pagos": pagos, "hoy": date.today().isoformat(),
             "saldo": (r["total"] - r["pagado"]), "error": error,
+            "centros_grupos": centros.grupos("gasto"),
         },
         status_code=status_code,
     )
@@ -1236,7 +1271,8 @@ def rendicion_nueva_form(request: Request):
         return RedirectResponse("/", status_code=303)
     return templates.TemplateResponse(
         "rendicion_nueva.html",
-        {"request": request, "rut": client.rut, "hoy": date.today().isoformat(), "error": None},
+        {"request": request, "rut": client.rut, "hoy": date.today().isoformat(), "error": None,
+         "centros_grupos": centros.grupos("gasto")},
     )
 
 
@@ -1248,6 +1284,7 @@ async def rendicion_nueva_crear(
     item_descripcion: list[str] = Form(default=[]),
     item_numero: list[str] = Form(default=[]),
     item_monto: list[str] = Form(default=[]),
+    item_centro: list[str] = Form(default=[]),
     archivos: list[UploadFile] = File(default=[]),
 ):
     client = _guard(request)
@@ -1258,7 +1295,8 @@ async def rendicion_nueva_crear(
         return templates.TemplateResponse(
             "rendicion_nueva.html",
             {"request": request, "rut": client.rut, "hoy": date.today().isoformat(),
-             "error": msg, "nombre": nombre, "fecha": fecha},
+             "error": msg, "nombre": nombre, "fecha": fecha,
+             "centros_grupos": centros.grupos("gasto")},
             status_code=400,
         )
 
@@ -1277,12 +1315,16 @@ async def rendicion_nueva_crear(
         desc = (item_descripcion[i] or "").strip()
         numero = (item_numero[i] if i < len(item_numero) else "").strip()
         monto_raw = item_monto[i] if i < len(item_monto) else "0"
+        centro = (item_centro[i] if i < len(item_centro) else "").strip().upper()
+        if centro and not centros.es_valido(centro, "gasto"):
+            centro = ""  # un valor manipulado no bota la creación: queda sin imputar
         try:
             monto = int(float(monto_raw))
         except (ValueError, TypeError):
             monto = 0
         if desc and monto > 0:
-            items.append({"descripcion": desc, "numero_doc": numero, "monto": monto})
+            items.append({"descripcion": desc, "numero_doc": numero, "monto": monto,
+                          "centro_costo": centro})
     if not items:
         return _remostrar("Agrega al menos un ítem con descripción y monto mayor a cero.")
 
@@ -1323,6 +1365,29 @@ def rendicion_detalle(request: Request, rid: int):
     if not client:
         return RedirectResponse("/", status_code=303)
     return _render_rendicion(request, client, rid)
+
+
+@app.post("/pagos/rendiciones/{rid}/item/{item_id}/centro")
+def rendicion_item_centro(request: Request, rid: int, item_id: int, centro: str = Form("")):
+    """Imputa un ítem de la rendición a un centro de costo (o lo des-imputa)."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    centro = (centro or "").strip().upper()
+    if centro and not centros.es_valido(centro, "gasto"):
+        return _render_rendicion(request, client, rid,
+                                 error="Centro de costo inválido.", status_code=400)
+    conn = db.get_conn()
+    ok = False
+    try:
+        ok = db.set_centro_item(conn, rid, item_id, centro)
+        conn.commit()
+    finally:
+        conn.close()
+    if ok:
+        _log_evento(request, f"Centro de costo de ítem actualizado · rendición "
+                             f"{db.codigo_rendicion(rid)} ítem {item_id} → {centro or '(sin imputar)'}")
+    return RedirectResponse(f"/pagos/rendiciones/{rid}", status_code=303)
 
 
 @app.post("/pagos/rendiciones/{rid}/pago")
@@ -1518,6 +1583,10 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
             "desde": d, "hasta": h, "movs": movs, "hoy": date.today().isoformat(),
             "total_ingresos": total_ing, "total_egresos": total_egr,
             "neto": total_ing - total_egr, "error": error or None,
+            # Ambos catálogos: el JS de la plantilla muestra el que corresponde
+            # al flujo elegido (Ingreso -> ingresos, Egreso -> gastos).
+            "centros_ingreso": centros.grupos("ingreso"),
+            "centros_gasto": centros.grupos("gasto"),
         },
     )
 
@@ -1545,7 +1614,7 @@ def movimientos_pdf(request: Request, desde: str = "", hasta: str = ""):
 @app.post("/movimientos/agregar")
 def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = Form(...),
                         descripcion: str = Form(...), monto: str = Form(...),
-                        desde: str = Form(""), hasta: str = Form("")):
+                        centro: str = Form(""), desde: str = Form(""), hasta: str = Form("")):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
@@ -1576,20 +1645,26 @@ def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = F
     if f_mov > date.today():
         return _error("No se permiten fechas futuras.")
 
+    centro = (centro or "").strip().upper()
+    if centro and not centros.es_valido(centro, "ingreso" if flujo == "Ingreso" else "gasto"):
+        return _error("Centro de costo inválido para ese tipo de movimiento.")
+
     conn = db.get_conn()
     try:
-        db.agregar_movimiento_manual(conn, fecha, flujo, descripcion, monto_int)
+        db.agregar_movimiento_manual(conn, fecha, flujo, descripcion, monto_int, centro=centro)
         conn.commit()
     finally:
         conn.close()
-    _log_evento(request, f"Movimiento CC agregado (manual) · {flujo} ${monto_int} el {fecha} · {descripcion}")
+    _log_evento(request, f"Movimiento CC agregado (manual) · {flujo} ${monto_int} el {fecha} · {descripcion}"
+                         + (f" · {centro}" if centro else ""))
     return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
 
 
 @app.post("/movimientos/{mid}/editar")
 def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
                        flujo: str = Form(...), descripcion: str = Form(...),
-                       monto: str = Form(...), desde: str = Form(""), hasta: str = Form("")):
+                       monto: str = Form(...), centro: str = Form(""),
+                       desde: str = Form(""), hasta: str = Form("")):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
@@ -1620,9 +1695,14 @@ def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
     if f_mov > date.today():
         return _error("No se permiten fechas futuras.")
 
+    centro = (centro or "").strip().upper()
+    if centro and not centros.es_valido(centro, "ingreso" if flujo == "Ingreso" else "gasto"):
+        return _error("Centro de costo inválido para ese tipo de movimiento.")
+
     conn = db.get_conn()
     try:
-        ok = db.editar_movimiento_manual(conn, mid, fecha, flujo, descripcion, monto_int)
+        ok = db.editar_movimiento_manual(conn, mid, fecha, flujo, descripcion, monto_int,
+                                         centro=centro)
         conn.commit()
     finally:
         conn.close()

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERP Básico · Pagos</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="https://www.e-auto.global/assets/logos/eauto_logo_new.webp" alt="e-auto">
+      <div class="divider"></div>
+      <span class="tag">ERP Básico</span>
+    </div>
+    <div class="userchip">
+      <span>Conectado al SII · {{ rut }}</span>
+      <form method="post" action="/logout">
+        <button type="submit">Salir</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="head">
+      <div class="eyebrow"><a href="/" style="color:var(--slate)">← Cockpit</a></div>
+      <h1>Módulo 4 · Pagos</h1>
+      <p>Gestión de pagos de E-Auto, conciliados con las facturas del SII.</p>
+    </div>
+
+    <div class="cards">
+      <a class="card" href="/pagos/proveedores" style="display:block">
+        <div class="eyebrow">Sub-módulo</div>
+        <h3>Pago a proveedores</h3>
+        <p>Fecha tope y pagos parciales de cada factura recibida. Verde al pagar completo, azul mientras esté pendiente.</p>
+        <span class="badge">Activo</span>
+      </a>
+      <a class="card" href="/pagos/ingresos" style="display:block">
+        <div class="eyebrow">Sub-módulo</div>
+        <h3>Ingresos</h3>
+        <p>Fecha de cobro tope y cobros parciales de cada factura emitida. Verde al cobrar completo, azul mientras esté pendiente.</p>
+        <span class="badge">Activo</span>
+      </a>
+      <a class="card" href="/pagos/rendiciones" style="display:block">
+        <div class="eyebrow">Sub-módulo</div>
+        <h3>Rendiciones</h3>
+        <p>Gastos pagados por la empresa: ítems, adjuntos (boletas/facturas) y pagos parciales.</p>
+        <span class="badge">Activo</span>
+      </a>
+    </div>
+  </main>
+</body>
+</html>

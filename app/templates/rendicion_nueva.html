@@ -59,8 +59,9 @@
           <thead>
             <tr style="text-align:left;color:var(--slate);font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.1em">
               <th style="padding:6px 8px">Descripción</th>
-              <th style="padding:6px 8px;width:150px">N° boleta/factura</th>
-              <th style="padding:6px 8px;width:140px;text-align:right">Monto</th>
+              <th style="padding:6px 8px;width:130px">N° boleta/factura</th>
+              <th style="padding:6px 8px;width:170px">Centro de costo</th>
+              <th style="padding:6px 8px;width:120px;text-align:right">Monto</th>
               <th style="padding:6px 8px;width:36px"></th>
             </tr>
           </thead>
@@ -106,6 +107,10 @@
 
       function fmt(n) { return "$" + (n || 0).toLocaleString("es-CL"); }
 
+      // Catálogo de centros de costo (línea × categoría), renderizado por Jinja.
+      var CENTROS_HTML = '<option value="">— Centro —</option>' +
+        '{% for g in centros_grupos %}<optgroup label="{{ g.nombre }} ({{ g.codigo }})">{% for cod, nom in g.opciones %}<option value="{{ cod }}">{{ cod }} · {{ nom }}</option>{% endfor %}</optgroup>{% endfor %}';
+
       function recalcular() {
         var total = 0;
         body.querySelectorAll('input[name="item_monto"]').forEach(function (inp) {
@@ -120,6 +125,7 @@
         tr.innerHTML =
           '<td style="padding:6px 8px"><input type="text" name="item_descripcion" placeholder="Descripción del gasto" style="width:100%;background:#111;border:1px solid #262626;color:var(--snow);padding:9px;border-radius:var(--radius);font-size:13px"></td>' +
           '<td style="padding:6px 8px"><input type="text" name="item_numero" placeholder="Opcional" style="width:100%;background:#111;border:1px solid #262626;color:var(--snow);padding:9px;border-radius:var(--radius);font-size:13px;font-family:var(--mono)"></td>' +
+          '<td style="padding:6px 8px"><select name="item_centro" style="width:100%;background:#111;border:1px solid #262626;color:var(--snow);padding:9px;border-radius:var(--radius);font-size:12px;font-family:var(--mono)">' + CENTROS_HTML + '</select></td>' +
           '<td style="padding:6px 8px"><input type="number" name="item_monto" min="0" step="1" placeholder="0" style="width:100%;background:#111;border:1px solid #262626;color:var(--snow);padding:9px;border-radius:var(--radius);font-size:13px;font-family:var(--mono);text-align:right"></td>' +
           '<td style="padding:6px 8px;text-align:center"><button type="button" class="del-item" title="Quitar" style="background:none;border:1px solid #2b2b2b;color:var(--slate);padding:4px 9px;border-radius:var(--radius);font-size:13px">×</button></td>';
         body.appendChild(tr);
