@@ -930,6 +930,22 @@ def movimiento_cc_por_id(conn: sqlite3.Connection, mid: int) -> sqlite3.Row | No
     return conn.execute("SELECT * FROM movimientos_cc WHERE id = ?", (mid,)).fetchone()
 
 
+def movimientos_cc_manuales(conn: sqlite3.Connection, flujo: str) -> list[sqlite3.Row]:
+    """Movimientos CC de origen manual con el flujo indicado ('Ingreso'/'Egreso').
+
+    Se usan en el detalle de gestión de una factura ("Buscar pagos ya
+    realizados") para ofrecer los movimientos que ya se habían cargado a
+    mano en Movimientos CC (p. ej. un cobro parcial recibido durante el mes,
+    antes de emitir la factura) y convertirlos en pagos/cobros parciales de
+    esa factura, sin duplicar el movimiento de caja.
+    """
+    return conn.execute(
+        "SELECT * FROM movimientos_cc WHERE origen = 'manual' AND flujo = ? "
+        "ORDER BY fecha DESC, id DESC",
+        (flujo,),
+    ).fetchall()
+
+
 def agregar_movimiento_manual(conn: sqlite3.Connection, fecha: str, flujo: str,
                               descripcion: str, monto: int) -> int:
     cur = conn.execute(

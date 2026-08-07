@@ -593,6 +593,11 @@ SECCIONES = {
     },
 }
 
+# Flujo de Movimientos CC que corresponde a cada dirección de pago: un pago a
+# proveedores ('emitido') sale como Egreso; un cobro de ingresos ('recibido')
+# entra como Ingreso. Se usa en "Buscar pagos ya realizados".
+_FLUJO_DE_DIRECCION = {"recibido": "Ingreso", "emitido": "Egreso"}
+
 
 def _guard(request: Request):
     client = _current_client(request)
@@ -661,6 +666,7 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
             rid_asoc = db.rendicion_asociada_a_factura(conn, f["id"])
             if rid_asoc is not None:
                 rend_asociada = {"id": rid_asoc, "codigo": db.codigo_rendicion(rid_asoc)}
+        movs_manuales = db.movimientos_cc_manuales(conn, _FLUJO_DE_DIRECCION[cfg["direccion"]])
     finally:
         conn.close()
     return templates.TemplateResponse(
@@ -671,6 +677,7 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
             "adjuntos": adjuntos,
             "hoy": date.today().isoformat(), "saldo": (f["total"] - f["pagado"]),
             "error": error, "rendiciones": rendiciones, "rend_asociada": rend_asociada,
+            "movs_manuales": movs_manuales,
         },
         status_code=status_code,
     )
@@ -849,6 +856,69 @@ def _eliminar_movimiento(request: Request, seccion: str, codigo: str, pago_id: i
     return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
 
 
+def _agregar_movimientos_desde_cc(request: Request, seccion: str, codigo: str,
+                                  mov_ids: list[int]):
+    """Convierte movimientos CC manuales, ya seleccionados en "Buscar pagos ya
+    realizados", en pagos/cobros parciales de la factura. Al sincronizar,
+    cada pago nuevo agrega su propio movimiento (origen='factura') a
+    Movimientos CC; para no duplicar la caja, las filas manuales originales
+    se eliminan justo después (solo esas, nada más)."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    cfg = SECCIONES[seccion]
+    mov_ids = sorted(set(i for i in mov_ids if i))
+    if not mov_ids:
+        return _render_detalle(request, client, seccion, codigo,
+                               error="No se seleccionó ningún movimiento.", status_code=400)
+
+    conn = db.get_conn()
+    try:
+        f = db.factura_pago_por_codigo(conn, codigo)
+        if not f:
+            return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
+        if f["anulada_por"]:
+            return RedirectResponse(f"/pagos/{seccion}", status_code=303)
+        if f["fecha_reclamo"]:
+            return _render_detalle(request, client, seccion, codigo,
+                                   error="La factura está rechazada; no admite movimientos.",
+                                   status_code=400)
+
+        flujo_esperado = _FLUJO_DE_DIRECCION[cfg["direccion"]]
+        movs = []
+        for mid in mov_ids:
+            m = db.movimiento_cc_por_id(conn, mid)
+            if m and m["origen"] == "manual" and m["flujo"] == flujo_esperado:
+                movs.append(m)
+        if not movs:
+            return _render_detalle(request, client, seccion, codigo,
+                                   error="Los movimientos seleccionados ya no están disponibles.",
+                                   status_code=400)
+
+        saldo = f["total"] - f["pagado"]
+        total_sel = sum(m["monto"] for m in movs)
+        if total_sel > saldo:
+            saldo_fmt = "{:,.0f}".format(saldo).replace(",", ".")
+            return _render_detalle(
+                request, client, seccion, codigo,
+                error=f"Los movimientos seleccionados suman más que el saldo pendiente (${saldo_fmt}).",
+                status_code=400)
+
+        for m in movs:
+            db.agregar_pago(conn, f["id"], m["fecha"], m["monto"], direccion=cfg["direccion"])
+        db.sincronizar_movimientos_cc(conn)
+        for m in movs:
+            db.eliminar_movimiento_manual(conn, m["id"])
+        conn.commit()
+    finally:
+        conn.close()
+    _log_evento(
+        request,
+        f"{len(movs)} {cfg['accion']}(s) agregados desde Movimientos CC · {seccion} {codigo} · ${total_sel}",
+    )
+    return RedirectResponse(f"/pagos/{seccion}/{codigo}", status_code=303)
+
+
 async def _agregar_adjunto_factura(request: Request, seccion: str, codigo: str,
                                    archivos: list[UploadFile]) -> Response:
     if not _guard(request):
@@ -947,6 +1017,13 @@ def proveedores_eliminar(request: Request, codigo: str, pago_id: int):
     return _eliminar_movimiento(request, "proveedores", codigo, pago_id)
 
 
+@app.post("/pagos/proveedores/{codigo}/movimientos-desde-cc")
+async def proveedores_movimientos_desde_cc(request: Request, codigo: str):
+    form = await request.form()
+    mov_ids = [int(v) for v in form.getlist("mov_ids") if str(v).strip().isdigit()]
+    return _agregar_movimientos_desde_cc(request, "proveedores", codigo, mov_ids)
+
+
 @app.post("/pagos/proveedores/{codigo}/adjunto")
 async def proveedores_agregar_adjunto(request: Request, codigo: str,
                                       archivos: list[UploadFile] = File(default=[])):
@@ -1002,6 +1079,13 @@ def ingresos_agregar(request: Request, codigo: str,
 @app.post("/pagos/ingresos/{codigo}/pago/{pago_id}/eliminar")
 def ingresos_eliminar(request: Request, codigo: str, pago_id: int):
     return _eliminar_movimiento(request, "ingresos", codigo, pago_id)
+
+
+@app.post("/pagos/ingresos/{codigo}/movimientos-desde-cc")
+async def ingresos_movimientos_desde_cc(request: Request, codigo: str):
+    form = await request.form()
+    mov_ids = [int(v) for v in form.getlist("mov_ids") if str(v).strip().isdigit()]
+    return _agregar_movimientos_desde_cc(request, "ingresos", codigo, mov_ids)
 
 
 @app.post("/pagos/ingresos/{codigo}/adjunto")
