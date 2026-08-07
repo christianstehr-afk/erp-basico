@@ -1345,11 +1345,20 @@ def _render_rendicion(request: Request, client, rid: int,
 
 
 @app.get("/pagos/rendiciones", response_class=HTMLResponse)
-def rendiciones_lista(request: Request, desde: str = "", hasta: str = ""):
+def rendiciones_lista(request: Request, desde: str = "", hasta: str = "", volver: str = ""):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
+    # Memoria del filtro, igual que en _vista_lista (proveedores/ingresos):
+    # al volver desde "Gestionar" o desde "Nueva" (?volver=1) se restaura el
+    # rango con que se estaba mirando la lista; entrar directo desde el
+    # submenú o el Cockpit llega sin `volver` y usa el default (mes en curso).
+    if (volver or "").strip() and not (desde.strip() or hasta.strip()):
+        guardado = request.session.get("filtro_rendiciones") or []
+        if isinstance(guardado, (list, tuple)) and len(guardado) == 2:
+            desde, hasta = guardado[0] or "", guardado[1] or ""
     d, h = _rango_movimientos(desde, hasta)
+    request.session["filtro_rendiciones"] = [d, h]
     conn = db.get_conn()
     try:
         filas = db.rendiciones_en_rango(conn, d, h)
@@ -1656,7 +1665,9 @@ def rendicion_eliminar(request: Request, rid: int):
         except OSError:
             pass
     _log_evento(request, f"Rendición ELIMINADA · {nombre} (id {rid})")
-    return RedirectResponse("/pagos/rendiciones", status_code=303)
+    # ?volver=1: tras eliminar, la lista vuelve con el filtro que se estaba
+    # usando, no con el mes en curso.
+    return RedirectResponse("/pagos/rendiciones?volver=1", status_code=303)
 
 
 # ---------------------------------------------------------------------------
