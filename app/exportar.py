@@ -801,12 +801,10 @@ def _leeme_respaldo(fecha: str) -> str:
         "                        movimientos CC y el log de auditoría.\n"
         "- Adjuntos/Rendiciones  Boletas/facturas subidas a cada rendición.\n"
         "- Adjuntos/Facturas     Documentos subidos en la gestión de pago/cobro de\n"
-        "                        cada factura.\n"
-        "- PDFs/                 Copia permanente de los PDF de facturas, boletas y\n"
-        "                        notas de crédito del SII, precargada por el sync (ver\n"
-        "                        pdf_store.py). Si falta alguno acá, se vuelve a pedir\n"
-        "                        al SII solo al abrirlo; no es indispensable para\n"
-        "                        reconstruir, pero evita repetir toda la precarga.\n"
+        "                        cada factura (ojo: los PDF de las facturas/boletas del\n"
+        "                        SII NO se guardan acá: se vuelven a pedir al SII al\n"
+        "                        momento de verlos, con sesión activa; no hace falta\n"
+        "                        respaldarlos, ya están en el SII).\n"
         "- Codigo/               Copia completa del código de la app, tal como estaba\n"
         "                        corriendo al momento de generar este respaldo.\n\n"
         "Cómo reconstruir todo desde cero frente a un desastre:\n"
@@ -815,26 +813,27 @@ def _leeme_respaldo(fecha: str) -> str:
         "2. En el servidor nuevo, copiar BaseDatos/erp.db a la ruta de la variable de\n"
         "   entorno DB_PATH (en Railway: el volumen persistente, por defecto /data/erp.db).\n"
         "3. Copiar Adjuntos/Rendiciones a la ruta de ADJUNTOS_DIR (por defecto\n"
-        "   /data/adjuntos/rendiciones), Adjuntos/Facturas a la ruta de\n"
-        "   ADJUNTOS_FACTURAS_DIR (por defecto /data/adjuntos/facturas) y PDFs/ a la\n"
-        "   ruta de PDF_DIR (por defecto /data/pdfs).\n"
+        "   /data/adjuntos/rendiciones) y Adjuntos/Facturas a la ruta de\n"
+        "   ADJUNTOS_FACTURAS_DIR (por defecto /data/adjuntos/facturas).\n"
         "4. Iniciar la app normalmente: al arrancar crea/actualiza el esquema de la\n"
-        "   base de datos solo, sin tocar los datos ya copiados.\n"
+        "   base de datos solo, sin tocar los datos ya copiados. Los PDF de facturas y\n"
+        "   boletas se vuelven a precargar solos en el próximo 'Actualizar con SII'.\n"
     )
 
 
 def construir_respaldo_completo(db_bytes: bytes, adjuntos_dir: Path,
                                 adjuntos_facturas_dir: Path, code_dir: Path,
-                                fecha: str, pdf_dir: Path | None = None) -> bytes:
+                                fecha: str) -> bytes:
     """Arma un .zip con TODO lo necesario para reconstruir la app desde cero
     frente a un desastre informático: la base de datos, los adjuntos
-    (rendiciones y gestión de pago de facturas), la copia permanente de PDFs
-    del SII (pdf_store, ver `pdf_dir`) y una copia del código fuente tal como
-    está corriendo ahora mismo. Ver GET /respaldo en main.py (botón
+    (rendiciones y gestión de pago de facturas) y una copia del código fuente
+    tal como está corriendo ahora mismo. Ver GET /respaldo en main.py (botón
     "Descargar Respaldo" del Cockpit).
 
-    `pdf_dir` es opcional (None = no se agrega esa carpeta) para que llamadas
-    viejas o tests que no la pasen sigan funcionando igual que antes."""
+    A propósito NO incluye los PDF de facturas/boletas del SII (pdf_store,
+    ver PDF_DIR): son recuperables del SII en cualquier momento (la precarga
+    del sync los repone solos), así que respaldarlos solo agrandaría el .zip
+    sin necesidad (decisión de Christian, 2026-08-07 — antes se agregaban)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("BaseDatos/erp.db", db_bytes)
@@ -848,8 +847,6 @@ def construir_respaldo_completo(db_bytes: bytes, adjuntos_dir: Path,
 
         _agregar_carpeta(adjuntos_dir, "Adjuntos/Rendiciones")
         _agregar_carpeta(adjuntos_facturas_dir, "Adjuntos/Facturas")
-        if pdf_dir is not None:
-            _agregar_carpeta(pdf_dir, "PDFs")
 
         if code_dir.exists():
             for p in code_dir.rglob("*"):

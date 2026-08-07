@@ -424,16 +424,18 @@ def facturas_alias():
 def respaldo_db(request: Request):
     """Descarga un .zip con TODO lo necesario para reconstruir la app frente a
     un desastre informático (botón "Descargar Respaldo" del Cockpit): la base
-    de datos, los adjuntos de rendiciones y de gestión de facturas, la copia
-    permanente de PDFs del SII (pdf_store) y una copia del código tal como
-    está corriendo. Ver exportar.construir_respaldo_completo."""
+    de datos, los adjuntos de rendiciones y de gestión de facturas, y una
+    copia del código tal como está corriendo. NO incluye los PDF de facturas
+    y boletas del SII (pdf_store/PDF_DIR): son recuperables del SII en
+    cualquier momento, así que respaldarlos solo agrandaría el .zip sin
+    necesidad. Ver exportar.construir_respaldo_completo."""
     client = _current_client(request)
     if not client or not client.rut:
         return RedirectResponse("/", status_code=303)
     db_bytes = db.respaldo_bytes()
     data = exportar.construir_respaldo_completo(
         db_bytes, ADJUNTOS_DIR, ADJUNTOS_FACTURAS_DIR, BASE_DIR.parent,
-        fecha=date.today().isoformat(), pdf_dir=pdf_store.PDF_DIR,
+        fecha=date.today().isoformat(),
     )
     nombre = f"RespaldoCompletoERP_{date.today():%Y%m%d}.zip"
     return Response(
