@@ -108,6 +108,7 @@ input,select{font-family:var(--font)}
   .cockpit-scroll{max-height:none !important}
   .cockpit-head{flex-direction:column;align-items:stretch}
   .cockpit-head .sii-btn{width:100%}
+  .cockpit-head .kpi-link-btn{display:block;width:100%;box-sizing:border-box;text-align:center;margin:0 0 8px}
 
   /* Botones al pie: apilados y a lo ancho */
   .footer-btns{flex-direction:column}

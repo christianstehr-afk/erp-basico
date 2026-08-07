@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERP Básico · Movimientos CC</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    .mcc-input{background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)}
+    .mcc-label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px}
+    .mcc-btn{background:var(--green);color:#fff;border:none;padding:11px 20px;border-radius:var(--radius);font-weight:700;font-size:13px;cursor:pointer}
+    .mcc-badge{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700}
+    .mcc-link-btn{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:5px 10px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700;background:none;cursor:pointer}
+    .mcc-link-btn.danger{color:#c0392b}
+    tr.mcc-edit-row{display:none}
+    tr.mcc-edit-row.on{display:table-row}
+  </style>
+</head>
+{% macro sel_centros(grupos, flujo_val, seleccionado) -%}
+  <!-- Un select por flujo; el JS (wireCentro) muestra/habilita solo el que
+       calza con el Tipo elegido. El deshabilitado no se envía. -->
+  <select name="centro" class="sel-centro mcc-input" data-flujo="{{ flujo_val }}" style="font-size:12px;min-width:200px">
+    <option value="">— Sin imputar —</option>
+    {% for g in grupos %}
+    <optgroup label="{{ g.nombre }} ({{ g.codigo }})">
+      {% for cod, nom in g.opciones %}
+      <option value="{{ cod }}" {% if seleccionado == cod %}selected{% endif %}>{{ cod }} · {{ nom }}</option>
+      {% endfor %}
+    </optgroup>
+    {% endfor %}
+  </select>
+{%- endmacro %}
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="https://www.e-auto.global/assets/logos/eauto_logo_new.webp" alt="e-auto">
+      <div class="divider"></div>
+      <span class="tag">ERP Básico</span>
+    </div>
+    <div class="userchip">
+      <span>Conectado al SII · {{ rut }}</span>
+      <form method="post" action="/logout">
+        <button type="submit">Salir</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="head">
+      <div class="eyebrow"><a href="/" style="color:var(--slate)">← Cockpit</a></div>
+      <h1>Movimientos CC</h1>
+      <p>
+        Espejo editable de la cuenta corriente: los movimientos de facturas/boletas y rendiciones
+        se agregan solos; los demás (comisiones, transferencias sueltas, etc.) se agregan a mano acá.
+      </p>
+    </div>
+
+    {% if error %}
+    <div style="border:1px solid #4a1414;background:rgba(192,57,43,.08);color:#e0796b;padding:12px 14px;border-radius:var(--radius);margin-bottom:20px;font-size:13px">
+      {{ error }}
+    </div>
+    {% endif %}
+
+    <!-- Agregar movimiento manual -->
+    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:22px;background:#0f0f0f">
+      <div class="eyebrow" style="margin-bottom:14px">+ Agregar movimiento manual</div>
+      <form method="post" action="/movimientos/agregar" style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <input type="hidden" name="desde" value="{{ desde }}">
+        <input type="hidden" name="hasta" value="{{ hasta }}">
+        <div>
+          <label class="mcc-label">Fecha</label>
+          <input type="date" name="fecha" value="{{ hoy }}" required class="mcc-input" max="{{ hasta if hasta else '' }}">
+        </div>
+        <div>
+          <label class="mcc-label">Tipo</label>
+          <select name="flujo" required class="mcc-input">
+            <option value="Ingreso">Ingreso</option>
+            <option value="Egreso">Egreso</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <label class="mcc-label">Descripción</label>
+          <input type="text" name="descripcion" required class="mcc-input" style="width:100%" placeholder="Ej: Comisión mantención cuenta">
+        </div>
+        <div>
+          <label class="mcc-label">Centro</label>
+          {{ sel_centros(centros_ingreso, 'Ingreso', '') }}
+          {{ sel_centros(centros_gasto, 'Egreso', '') }}
+        </div>
+        <div>
+          <label class="mcc-label">Monto</label>
+          <input type="number" name="monto" min="1" step="1" required class="mcc-input" style="width:140px">
+        </div>
+        <button type="submit" class="mcc-btn">Agregar</button>
+      </form>
+    </div>
+
+    <!-- Rango -->
+    <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:22px;background:#0f0f0f">
+      <form method="get" action="/movimientos" style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <label class="mcc-label">Desde</label>
+          <input type="date" name="desde" id="rango-desde" value="{{ desde }}" required class="mcc-input">
+        </div>
+        <div>
+          <label class="mcc-label">Hasta</label>
+          <input type="date" name="hasta" id="rango-hasta" value="{{ hasta }}" required class="mcc-input">
+        </div>
+        <button type="submit" class="mcc-btn">Ver movimientos</button>
+        <a href="/movimientos/pdf?desde={{ desde }}&hasta={{ hasta }}" target="_blank"
+           class="mcc-link-btn" style="padding:11px 20px">Ver PDF</a>
+      </form>
+    </div>
+
+    <!-- Resumen -->
+    <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:baseline;margin-bottom:16px">
+      <div>
+        <div class="eyebrow" style="margin-bottom:6px">Ingresos</div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--green)">${{ "{:,.0f}".format(total_ingresos).replace(",", ".") }}</div>
+      </div>
+      <div>
+        <div class="eyebrow" style="margin-bottom:6px">Egresos</div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:600;color:#3b82f6">${{ "{:,.0f}".format(total_egresos).replace(",", ".") }}</div>
+      </div>
+      <div>
+        <div class="eyebrow" style="margin-bottom:6px">Neto</div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:600">${{ "{:,.0f}".format(neto).replace(",", ".") }}</div>
+      </div>
+      <div style="margin-left:auto;color:var(--slate);font-family:var(--mono);font-size:12px">
+        {{ movs|length }} movimiento{{ 's' if movs|length != 1 else '' }}
+      </div>
+    </div>
+
+    {% if movs %}
+    <div style="overflow:auto;border:1px solid #1c1c1c;border-radius:var(--radius)">
+      <table id="tabla-mov" style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="text-align:left;color:var(--slate);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em">
+            <th class="sortable" data-col="0" data-type="text" data-dir="desc" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha <span class="arrow"> ▼</span></th>
+            <th class="sortable" data-col="1" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Tipo <span class="arrow"></span></th>
+            <th class="sortable" data-col="2" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Descripción <span class="arrow"></span></th>
+            <th class="sortable" data-col="3" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Monto <span class="arrow"></span></th>
+            <th class="sortable" data-col="4" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Centro <span class="arrow"></span></th>
+            <th class="sortable" data-col="5" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Origen <span class="arrow"></span></th>
+            <th style="padding:12px 14px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in movs %}
+          {% set ing = m["flujo"] == "Ingreso" %}
+          {% set color = 'var(--green)' if ing else '#3b82f6' %}
+          {% set manual = m["origen"] == "manual" %}
+          <tr id="fila-{{ m['id'] }}" class="mcc-row" data-id="{{ m['id'] }}" style="border-top:1px solid #161616">
+            <td data-value="{{ m['fecha'] }}" style="padding:11px 14px;font-family:var(--mono)">{{ m["fecha"] }}</td>
+            <td data-value="{{ m['flujo'] }}" style="padding:11px 14px">
+              <span class="mcc-badge" style="background:{{ 'rgba(0,148,6,.15)' if ing else 'rgba(59,130,246,.15)' }};color:{{ color }}">{{ m["flujo"] }}</span>
+            </td>
+            <td data-value="{{ (m['descripcion'] or '')|lower }}" style="padding:11px 14px">{{ m["descripcion"] }}</td>
+            <td data-value="{{ m['monto'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">${{ "{:,.0f}".format(m["monto"]).replace(",", ".") }}</td>
+            <td data-value="{{ m['centro'] or '' }}" style="padding:11px 14px">
+              {% if m["centro"] %}
+              <span class="mcc-badge" style="background:#1c1c1c;color:var(--mist)">{{ m["centro"] }}</span>
+              {% else %}
+              <span style="color:var(--slate)">—</span>
+              {% endif %}
+            </td>
+            <td data-value="{{ m['origen'] }}" style="padding:11px 14px">
+              {% if m["origen"] == "factura" %}
+                {% if m["ref"] %}
+                <a href="/pdf/{{ m['ref'] }}" target="_blank" class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6;border-bottom:1px dotted #3b82f6">Factura ↗</a>
+                {% else %}
+                <span class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6">Factura</span>
+                {% endif %}
+              {% elif m["origen"] == "rendicion" %}
+                <span class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6">Rendición</span>
+              {% else %}
+                <span class="mcc-badge" style="background:#1c1c1c;color:var(--slate)">Manual</span>
+              {% endif %}
+            </td>
+            <td style="padding:11px 14px;white-space:nowrap">
+              {% if manual %}
+              <button type="button" class="mcc-link-btn" onclick="toggleEdit({{ m['id'] }})">Editar</button>
+              <form method="post" action="/movimientos/{{ m['id'] }}/eliminar" style="display:inline"
+                    onsubmit="return confirm('¿Eliminar este movimiento?');">
+                <input type="hidden" name="desde" value="{{ desde }}">
+                <input type="hidden" name="hasta" value="{{ hasta }}">
+                <button type="submit" class="mcc-link-btn danger">Eliminar</button>
+              </form>
+              {% else %}
+              <span style="color:var(--slate)">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% if manual %}
+          <tr class="mcc-edit-row" id="edit-{{ m['id'] }}">
+            <td colspan="7" style="padding:14px;background:#0c0c0c;border-top:1px solid #161616">
+              <form method="post" action="/movimientos/{{ m['id'] }}/editar"
+                    style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+                <input type="hidden" name="desde" value="{{ desde }}">
+                <input type="hidden" name="hasta" value="{{ hasta }}">
+                <div>
+                  <label class="mcc-label">Fecha</label>
+                  <input type="date" name="fecha" value="{{ m['fecha'] }}" required class="mcc-input">
+                </div>
+                <div>
+                  <label class="mcc-label">Tipo</label>
+                  <select name="flujo" required class="mcc-input">
+                    <option value="Ingreso" {% if ing %}selected{% endif %}>Ingreso</option>
+                    <option value="Egreso" {% if not ing %}selected{% endif %}>Egreso</option>
+                  </select>
+                </div>
+                <div style="flex:1;min-width:220px">
+                  <label class="mcc-label">Descripción</label>
+                  <input type="text" name="descripcion" value="{{ m['descripcion'] }}" required class="mcc-input" style="width:100%">
+                </div>
+                <div>
+                  <label class="mcc-label">Centro</label>
+                  {{ sel_centros(centros_ingreso, 'Ingreso', m['centro_costo'] or '') }}
+                  {{ sel_centros(centros_gasto, 'Egreso', m['centro_costo'] or '') }}
+                </div>
+                <div>
+                  <label class="mcc-label">Monto</label>
+                  <input type="number" name="monto" value="{{ m['monto'] }}" min="1" step="1" required class="mcc-input" style="width:140px">
+                </div>
+                <button type="submit" class="mcc-btn">Guardar</button>
+                <button type="button" class="mcc-link-btn" onclick="toggleEdit({{ m['id'] }})">Cancelar</button>
+              </form>
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div style="border:1px dashed #2b2b2b;border-radius:var(--radius);padding:40px;text-align:center;color:var(--slate)">
+      No hay movimientos registrados en este rango.
+    </div>
+    {% endif %}
+  </main>
+
+  <script>
+    function toggleEdit(id) {
+      var row = document.getElementById('edit-' + id);
+      if (row) row.classList.toggle('on');
+    }
+
+    // Muestra solo el select de centros que calza con el Tipo (Ingreso/Egreso)
+    // elegido en cada formulario; el otro queda oculto y deshabilitado (y por
+    // ende no se envía). Aplica al form de agregar y a cada form de edición.
+    (function () {
+      document.querySelectorAll("form").forEach(function (form) {
+        var flujo = form.querySelector('select[name="flujo"]');
+        var sels = form.querySelectorAll("select.sel-centro");
+        if (!flujo || !sels.length) return;
+        function aplicar() {
+          sels.forEach(function (s) {
+            var visible = s.getAttribute("data-flujo") === flujo.value;
+            s.disabled = !visible;
+            s.style.display = visible ? "" : "none";
+          });
+        }
+        flujo.addEventListener("change", aplicar);
+        aplicar();
+      });
+    })();
+  </script>
+
+  <script>
+    (function () {
+      var tabla = document.getElementById("tabla-mov");
+      if (!tabla) return;
+      var tbody = tabla.tBodies[0];
+      var cabeceras = tabla.querySelectorAll("th.sortable");
+
+      function valorCelda(fila, col, tipo) {
+        var celda = fila.children[col];
+        var v = celda.getAttribute("data-value");
+        if (v === null) v = celda.textContent.trim();
+        return tipo === "num" ? parseFloat(v) || 0 : v.toLowerCase();
+      }
+
+      function ordenar(col, tipo, asc) {
+        // Solo se ordenan las filas "de datos" (mcc-row); cada una arrastra
+        // consigo su fila de edición (si tiene), para que no se separen.
+        var filas = Array.prototype.slice.call(tbody.querySelectorAll("tr.mcc-row"));
+        filas.sort(function (a, b) {
+          var va = valorCelda(a, col, tipo), vb = valorCelda(b, col, tipo);
+          if (va < vb) return asc ? -1 : 1;
+          if (va > vb) return asc ? 1 : -1;
+          return 0;
+        });
+        filas.forEach(function (fila) {
+          tbody.appendChild(fila);
+          var edicion = document.getElementById("edit-" + fila.getAttribute("data-id"));
+          if (edicion) tbody.appendChild(edicion);
+        });
+      }
+
+      cabeceras.forEach(function (th) {
+        th.addEventListener("click", function () {
+          var col = parseInt(th.getAttribute("data-col"), 10);
+          var tipo = th.getAttribute("data-type");
+          var asc = th.getAttribute("data-dir") !== "asc";
+          cabeceras.forEach(function (o) {
+            o.removeAttribute("data-dir");
+            var fl = o.querySelector(".arrow"); if (fl) fl.textContent = "";
+          });
+          th.setAttribute("data-dir", asc ? "asc" : "desc");
+          var flecha = th.querySelector(".arrow");
+          if (flecha) flecha.textContent = asc ? " ▲" : " ▼";
+          ordenar(col, tipo, asc);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

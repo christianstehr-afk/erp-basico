@@ -1430,3 +1430,403 @@ def listar_logs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT fecha, hora, accion, usuario FROM logs ORDER BY id DESC"
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Módulo 7 · KPIs y gráficos (página /kpis)
+#
+# Todas las consultas de análisis viven acá, en una sola función de entrada
+# (datos_kpis) que arma el dict JSON-listo que consume el dashboard. Dos
+# "bases" de medición, siempre explícitas (ver el informe KPIs_y_Analisis):
+#   · devengado: por fecha de emisión de facturas/boletas (+ rendiciones por
+#     su fecha), excluyendo NC, guías (TIPOS_NO_PAGABLES), anuladas y
+#     rechazadas. Mide el negocio.
+#   · caja: por fecha de los movimientos CC (incluye manuales). Mide la plata.
+# La imputación multi-centro se prorratea con _prorratear (mismo criterio que
+# el export por centro), así todos los números calzan entre pantallas.
+# ---------------------------------------------------------------------------
+
+def _mes(fecha: str | None) -> str:
+    return (fecha or "")[:7]
+
+
+def _meses_entre(desde: str, hasta: str) -> list[str]:
+    """Lista de "YYYY-MM" entre desde y hasta (inclusive)."""
+    try:
+        a, m = int(desde[:4]), int(desde[5:7])
+        a2, m2 = int(hasta[:4]), int(hasta[5:7])
+    except (ValueError, IndexError):
+        return []
+    out = []
+    while (a, m) <= (a2, m2) and len(out) < 120:
+        out.append(f"{a:04d}-{m:02d}")
+        m += 1
+        if m == 13:
+            a, m = a + 1, 1
+    return out
+
+
+def _detalle_por_centro(conn: sqlite3.Connection, filas, campo_monto: str) -> list[dict]:
+    """Para cada factura (Row con id, total, centro_costo y `campo_monto`),
+    arma su lista (centro, monto) usando la distribución multi-centro si
+    existe, o el centro simple si no. Sin imputar => centro ''. La suma de
+    cada detalle es siempre exactamente el monto de la fila."""
+    ids = {f["id"] for f in filas}
+    distrib: dict[int, list[tuple[str, int]]] = {}
+    if ids:
+        marcadores = ",".join("?" * len(ids))
+        for r in conn.execute(
+            f"SELECT factura_id, centro, monto FROM factura_centros WHERE factura_id IN ({marcadores})",
+            tuple(ids),
+        ).fetchall():
+            distrib.setdefault(r["factura_id"], []).append((r["centro"], r["monto"]))
+    out = []
+    for f in filas:
+        monto = f[campo_monto] or 0
+        d = distrib.get(f["id"])
+        if d:
+            total_doc = f["total"] or sum(m for _, m in d)
+            detalle = _prorratear(d, total_doc, monto)
+        else:
+            detalle = [((f["centro_costo"] or ""), monto)]
+        out.append({"fila": f, "detalle": detalle})
+    return out
+
+
+def _facturas_devengadas(conn: sqlite3.Connection, tipo: str, desde: str, hasta: str):
+    """Facturas/boletas que cuentan para el devengado del rango: vigentes
+    (sin anular, sin reclamo) y pagables (sin NC ni guías)."""
+    marcadores = ",".join("?" * len(TIPOS_NO_PAGABLES))
+    return conn.execute(
+        f"""
+        SELECT id, total, centro_costo, fecha_emision
+        FROM facturas
+        WHERE tipo = ? AND fecha_emision >= ? AND fecha_emision <= ?
+          AND anulada_por IS NULL AND fecha_reclamo IS NULL
+          AND (tipo_dte IS NULL OR tipo_dte NOT IN ({marcadores}))
+        """,
+        (tipo, desde, hasta, *TIPOS_NO_PAGABLES),
+    ).fetchall()
+
+
+def _movs_caja_con_centros(conn: sqlite3.Connection, desde: str, hasta: str) -> list[dict]:
+    """Movimientos CC del rango con su detalle (centro, monto) prorrateado:
+    filas de factura heredan la imputación del documento; las de rendición,
+    la de sus ítems; las manuales usan su propio centro. Sin centro => ''."""
+    movs = []
+    filas = conn.execute(
+        """
+        SELECT m.id, m.fecha, m.flujo, m.monto, m.origen, m.centro_costo AS centro_manual,
+               p.factura_id AS factura_id, f.total AS ftotal, f.centro_costo AS fcentro,
+               rp.rendicion_id AS rendicion_id
+        FROM movimientos_cc m
+        LEFT JOIN pagos p ON p.id = m.pago_id
+        LEFT JOIN facturas f ON f.id = p.factura_id
+        LEFT JOIN rendicion_pagos rp ON rp.id = m.rendicion_pago_id
+        WHERE m.fecha >= ? AND m.fecha <= ?
+        """,
+        (desde, hasta),
+    ).fetchall()
+    ids_fact = {r["factura_id"] for r in filas if r["factura_id"]}
+    distrib: dict[int, list[tuple[str, int]]] = {}
+    if ids_fact:
+        marcadores = ",".join("?" * len(ids_fact))
+        for r in conn.execute(
+            f"SELECT factura_id, centro, monto FROM factura_centros WHERE factura_id IN ({marcadores})",
+            tuple(ids_fact),
+        ).fetchall():
+            distrib.setdefault(r["factura_id"], []).append((r["centro"], r["monto"]))
+    ids_rend = {r["rendicion_id"] for r in filas if r["rendicion_id"]}
+    items_rend: dict[int, dict[str, int]] = {}
+    if ids_rend:
+        marcadores = ",".join("?" * len(ids_rend))
+        for r in conn.execute(
+            f"SELECT rendicion_id, centro_costo, monto FROM rendicion_items WHERE rendicion_id IN ({marcadores})",
+            tuple(ids_rend),
+        ).fetchall():
+            g = items_rend.setdefault(r["rendicion_id"], {})
+            c = r["centro_costo"] or ""
+            g[c] = g.get(c, 0) + (r["monto"] or 0)
+    for m in filas:
+        monto = m["monto"] or 0
+        if m["factura_id"]:
+            d = distrib.get(m["factura_id"])
+            if d:
+                total_doc = m["ftotal"] or sum(x for _, x in d)
+                detalle = _prorratear(d, total_doc, monto)
+            else:
+                detalle = [((m["fcentro"] or ""), monto)]
+        elif m["rendicion_id"]:
+            g = items_rend.get(m["rendicion_id"], {})
+            total_r = sum(g.values())
+            detalle = _prorratear(list(g.items()), total_r, monto) if total_r else [("", monto)]
+        else:
+            detalle = [((m["centro_manual"] or ""), monto)]
+        movs.append({"fecha": m["fecha"], "flujo": m["flujo"], "detalle": detalle})
+    return movs
+
+
+def _suma_linea(detalle: list[tuple[str, int]], linea: str) -> int:
+    """Monto del detalle que corresponde a la línea pedida ('' = todo)."""
+    if not linea:
+        return sum(m for _, m in detalle)
+    pref = linea + "-"
+    return sum(m for c, m in detalle if (c or "").startswith(pref))
+
+
+def _cat(centro: str) -> str:
+    """Categoría de un código 'LINEA-CAT' ('' si viene sin imputar)."""
+    return centro.partition("-")[2] if centro and "-" in centro else ""
+
+
+def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
+               linea: str = "", base: str = "devengado",
+               hoy: str | None = None) -> dict:
+    """Todo lo que la página /kpis necesita, en un solo dict JSON-listo.
+
+    `linea`: '' (todas), 'MUE' o 'EAU' — filtra series, mix, gasto por
+    categoría y aging (prorrateando documentos multi-centro). El heatmap y
+    las tarjetas del cockpit son siempre globales (las tarjetas miran el mes
+    en curso y la foto de HOY, no el rango). La proyección de caja también es
+    global: la caja es una sola.
+    `base`: 'devengado' o 'caja' (ver comentario del módulo).
+    `hoy`: inyectable para tests.
+    """
+    from datetime import date, timedelta
+    hoy = hoy or date.today().isoformat()
+    meses = _meses_entre(desde, hasta)
+    idx = {m: i for i, m in enumerate(meses)}
+
+    # ---------- fuentes del rango, según base
+    if base == "caja":
+        movs = _movs_caja_con_centros(conn, desde, hasta)
+        fuente_ing = [{"mes": _mes(m["fecha"]), "detalle": m["detalle"]}
+                      for m in movs if m["flujo"] == "Ingreso"]
+        fuente_egr = [{"mes": _mes(m["fecha"]), "detalle": m["detalle"]}
+                      for m in movs if m["flujo"] == "Egreso"]
+    else:
+        ventas = _detalle_por_centro(conn, _facturas_devengadas(conn, "venta", desde, hasta), "total")
+        compras = _detalle_por_centro(conn, _facturas_devengadas(conn, "compra", desde, hasta), "total")
+        fuente_ing = [{"mes": _mes(v["fila"]["fecha_emision"]), "detalle": v["detalle"]} for v in ventas]
+        fuente_egr = [{"mes": _mes(c["fila"]["fecha_emision"]), "detalle": c["detalle"]} for c in compras]
+        # Rendiciones: gasto devengado por la fecha de la rendición, con la
+        # imputación de sus ítems.
+        for r in conn.execute(
+            """SELECT r.fecha AS fecha, i.centro_costo AS centro, SUM(i.monto) AS monto
+               FROM rendiciones r JOIN rendicion_items i ON i.rendicion_id = r.id
+               WHERE r.fecha >= ? AND r.fecha <= ?
+               GROUP BY r.fecha, i.centro_costo""",
+            (desde, hasta),
+        ).fetchall():
+            fuente_egr.append({"mes": _mes(r["fecha"]), "detalle": [((r["centro"] or ""), r["monto"] or 0)]})
+
+    # ---------- 5.1 serie mensual ingresos / egresos / neto
+    ser_ing = [0] * len(meses)
+    ser_egr = [0] * len(meses)
+    for f in fuente_ing:
+        if f["mes"] in idx:
+            ser_ing[idx[f["mes"]]] += _suma_linea(f["detalle"], linea)
+    for f in fuente_egr:
+        if f["mes"] in idx:
+            ser_egr[idx[f["mes"]]] += _suma_linea(f["detalle"], linea)
+
+    # ---------- 5.2 gasto por categoría por mes / 5.3 mix ingresos / 5.4 heatmap
+    from . import centros as _centros
+    cats_g = [c for c, _ in _centros.CATEGORIAS_GASTO]
+    cats_i = [c for c, _ in _centros.CATEGORIAS_INGRESO]
+    lineas_cod = [l for l, _ in _centros.LINEAS]
+
+    gasto_cat = {c: [0] * len(meses) for c in cats_g + ["SIN"]}
+    mix_ing = {c: 0 for c in cats_i + ["SIN"]}
+    heat_g = {l: {c: 0 for c in cats_g} for l in lineas_cod}
+    heat_i = {l: {c: 0 for c in cats_i} for l in lineas_cod}
+
+    pref = (linea + "-") if linea else ""
+    for f in fuente_egr:
+        for c, m in f["detalle"]:
+            l, cat = (c or "").partition("-")[0], _cat(c or "")
+            if l in heat_g and cat in heat_g[l]:
+                heat_g[l][cat] += m
+            if pref and not (c or "").startswith(pref):
+                continue
+            key = cat if cat in gasto_cat else "SIN"
+            if f["mes"] in idx:
+                gasto_cat[key][idx[f["mes"]]] += m
+    for f in fuente_ing:
+        for c, m in f["detalle"]:
+            l, cat = (c or "").partition("-")[0], _cat(c or "")
+            if l in heat_i and cat in heat_i[l]:
+                heat_i[l][cat] += m
+            if pref and not (c or "").startswith(pref):
+                continue
+            mix_ing[cat if cat in mix_ing else "SIN"] += m
+
+    # ---------- 5.6 aging de saldos (foto de HOY, no del rango)
+    def _aging(tipo: str) -> dict:
+        marcadores = ",".join("?" * len(TIPOS_NO_PAGABLES))
+        filas = conn.execute(
+            f"""
+            SELECT f.id, f.total, f.centro_costo,
+                   COALESCE(f.fecha_pago_tope, f.fecha_emision) AS tope,
+                   f.total - COALESCE((SELECT SUM(p.monto) FROM pagos p
+                                       WHERE p.factura_id = f.id), 0) AS saldo
+            FROM facturas f
+            WHERE f.tipo = ? AND f.anulada_por IS NULL AND f.fecha_reclamo IS NULL
+              AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
+            """,
+            (tipo, *TIPOS_NO_PAGABLES),
+        ).fetchall()
+        filas = [f for f in filas if (f["saldo"] or 0) > 0]
+        det = _detalle_por_centro(conn, filas, "saldo")
+        buckets = {"por_vencer": 0, "d0_30": 0, "d31_60": 0, "d61_90": 0, "d90": 0}
+        h = date.fromisoformat(hoy)
+        for x in det:
+            monto = _suma_linea(x["detalle"], linea)
+            if not monto:
+                continue
+            try:
+                dias = (h - date.fromisoformat(x["fila"]["tope"])).days
+            except (TypeError, ValueError):
+                dias = 0
+            if dias <= 0:
+                buckets["por_vencer"] += monto
+            elif dias <= 30:
+                buckets["d0_30"] += monto
+            elif dias <= 60:
+                buckets["d31_60"] += monto
+            elif dias <= 90:
+                buckets["d61_90"] += monto
+            else:
+                buckets["d90"] += monto
+        return buckets
+
+    aging = {"cobrar": _aging("venta"), "pagar": _aging("compra")}
+
+    # ---------- 5.5 caja acumulada del rango + proyección global a 60 días
+    movs_caja = _movs_caja_con_centros(conn, desde, min(hasta, hoy))
+    por_dia: dict[str, int] = {}
+    for m in movs_caja:
+        neto = sum(x for _, x in m["detalle"]) * (1 if m["flujo"] == "Ingreso" else -1)
+        por_dia[m["fecha"]] = por_dia.get(m["fecha"], 0) + neto
+    caja_real = []
+    acum = 0
+    for f in sorted(por_dia):
+        acum += por_dia[f]
+        caja_real.append({"fecha": f, "acum": acum})
+
+    # Proyección: saldos pendientes con su fecha tope (o hoy, si ya venció).
+    marcadores = ",".join("?" * len(TIPOS_NO_PAGABLES))
+    proy_dia: dict[str, int] = {}
+    for tipo, signo in (("venta", 1), ("compra", -1)):
+        for f in conn.execute(
+            f"""
+            SELECT COALESCE(f.fecha_pago_tope, f.fecha_emision) AS tope,
+                   f.total - COALESCE((SELECT SUM(p.monto) FROM pagos p
+                                       WHERE p.factura_id = f.id), 0) AS saldo
+            FROM facturas f
+            WHERE f.tipo = ? AND f.anulada_por IS NULL AND f.fecha_reclamo IS NULL
+              AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
+            """,
+            (tipo, *TIPOS_NO_PAGABLES),
+        ).fetchall():
+            saldo = f["saldo"] or 0
+            if saldo <= 0:
+                continue
+            fecha = max(f["tope"] or hoy, hoy)
+            proy_dia[fecha] = proy_dia.get(fecha, 0) + signo * saldo
+    # Rendiciones con saldo: egreso proyectado a hoy (no tienen fecha tope).
+    for r in conn.execute(
+        """SELECT COALESCE((SELECT SUM(i.monto) FROM rendicion_items i WHERE i.rendicion_id = r.id),0)
+                  - COALESCE((SELECT SUM(p.monto) FROM rendicion_pagos p WHERE p.rendicion_id = r.id),0) AS saldo
+           FROM rendiciones r"""
+    ).fetchall():
+        if (r["saldo"] or 0) > 0:
+            proy_dia[hoy] = proy_dia.get(hoy, 0) - r["saldo"]
+    lim = (date.fromisoformat(hoy) + timedelta(days=60)).isoformat()
+    caja_proy = []
+    acum_p = acum
+    for f in sorted(k for k in proy_dia if k <= lim):
+        acum_p += proy_dia[f]
+        caja_proy.append({"fecha": f, "acum": acum_p})
+
+    # ---------- tarjetas del cockpit (siempre globales, mes de `hoy`)
+    mes_act = hoy[:7]
+    ma = date.fromisoformat(mes_act + "-01")
+    mes_ant = (ma - timedelta(days=1)).isoformat()[:7]
+
+    def _caja_neta(mes: str) -> int:
+        tot = 0
+        for m in _movs_caja_con_centros(conn, mes + "-01", mes + "-31"):
+            neto = sum(x for _, x in m["detalle"])
+            tot += neto if m["flujo"] == "Ingreso" else -neto
+        return tot
+
+    def _resultado(mes: str) -> int:
+        d1, d2 = mes + "-01", mes + "-31"
+        ing = sum(f["total"] or 0 for f in _facturas_devengadas(conn, "venta", d1, d2))
+        egr = sum(f["total"] or 0 for f in _facturas_devengadas(conn, "compra", d1, d2))
+        egr += conn.execute(
+            """SELECT COALESCE(SUM(i.monto),0) FROM rendiciones r
+               JOIN rendicion_items i ON i.rendicion_id = r.id
+               WHERE r.fecha >= ? AND r.fecha <= ?""", (d1, d2)).fetchone()[0]
+        return ing - egr
+
+    def _vencido(tipo: str) -> dict:
+        filas = conn.execute(
+            f"""
+            SELECT f.total - COALESCE((SELECT SUM(p.monto) FROM pagos p
+                                       WHERE p.factura_id = f.id), 0) AS saldo
+            FROM facturas f
+            WHERE f.tipo = ? AND f.anulada_por IS NULL AND f.fecha_reclamo IS NULL
+              AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
+              AND COALESCE(f.fecha_pago_tope, f.fecha_emision) < ?
+            """,
+            (tipo, *TIPOS_NO_PAGABLES, hoy),
+        ).fetchall()
+        pend = [f["saldo"] for f in filas if (f["saldo"] or 0) > 0]
+        return {"monto": sum(pend), "n": len(pend)}
+
+    rechazadas = conn.execute(
+        """SELECT COUNT(*) FROM facturas f
+           WHERE f.tipo = 'venta' AND f.fecha_reclamo IS NOT NULL AND f.anulada_por IS NULL
+             AND f.total - COALESCE((SELECT SUM(p.monto) FROM pagos p
+                                     WHERE p.factura_id = f.id), 0) != 0"""
+    ).fetchone()[0]
+
+    sin_imp = conn.execute(
+        f"""
+        SELECT COUNT(*) AS n,
+               SUM(CASE WHEN (f.centro_costo IS NULL OR f.centro_costo = '')
+                         AND NOT EXISTS (SELECT 1 FROM factura_centros fc WHERE fc.factura_id = f.id)
+                        THEN 1 ELSE 0 END) AS sin
+        FROM facturas f
+        WHERE f.fecha_emision >= ? AND f.fecha_emision <= ?
+          AND f.anulada_por IS NULL AND f.fecha_reclamo IS NULL
+          AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
+        """,
+        (mes_act + "-01", mes_act + "-31", *TIPOS_NO_PAGABLES),
+    ).fetchone()
+
+    tarjetas = {
+        "caja_neta_mes": _caja_neta(mes_act), "caja_neta_mes_ant": _caja_neta(mes_ant),
+        "resultado_mes": _resultado(mes_act), "resultado_mes_ant": _resultado(mes_ant),
+        "por_cobrar_vencido": _vencido("venta"),
+        "por_pagar_vencido": _vencido("compra"),
+        "rechazadas_sin_resolver": rechazadas,
+        "docs_mes": sin_imp["n"] or 0, "docs_sin_imputar": sin_imp["sin"] or 0,
+    }
+
+    nombres = dict(_centros.CATEGORIAS_GASTO + _centros.CATEGORIAS_INGRESO)
+    return {
+        "meses": meses, "linea": linea, "base": base, "hoy": hoy,
+        "serie": {"ingresos": ser_ing, "egresos": ser_egr},
+        "gasto_categoria": gasto_cat,
+        "mix_ingresos": mix_ing,
+        "heatmap": {"lineas": lineas_cod, "cats_gasto": cats_g, "cats_ingreso": cats_i,
+                     "gasto": [[heat_g[l][c] for c in cats_g] for l in lineas_cod],
+                     "ingreso": [[heat_i[l][c] for c in cats_i] for l in lineas_cod]},
+        "aging": aging,
+        "caja": {"real": caja_real, "proyeccion": caja_proy},
+        "tarjetas": tarjetas,
+        "nombres_categorias": nombres,
+    }

@@ -261,6 +261,49 @@ def sync_estado(request: Request):
     return JSONResponse(sync.estado_sync)
 
 
+@app.get("/kpis", response_class=HTMLResponse)
+def kpis_pagina(request: Request, desde: str = "", hasta: str = ""):
+    """Página "KPI y Gráficos": análisis por centros de resultado (ver el
+    informe KPIs_y_Analisis_ERP_eAuto.pdf). El HTML solo trae los filtros
+    iniciales; los datos los pide el JS a /kpis/data. Rango por defecto:
+    los últimos 6 meses (incluyendo el actual)."""
+    client = _current_client(request)
+    if not client or not client.rut:
+        return RedirectResponse("/", status_code=303)
+    hoy = date.today()
+    if not (hasta or "").strip():
+        hasta = hoy.isoformat()
+    if not (desde or "").strip():
+        a, m = hoy.year, hoy.month - 5
+        if m < 1:
+            a, m = a - 1, m + 12
+        desde = f"{a:04d}-{m:02d}-01"
+    return templates.TemplateResponse(
+        "kpis.html", {"request": request, "rut": client.rut, "desde": desde, "hasta": hasta},
+    )
+
+
+@app.get("/kpis/data")
+def kpis_data(request: Request, desde: str = "", hasta: str = "",
+              linea: str = "", base: str = "devengado"):
+    """Datos JSON del dashboard de KPIs (ver db.datos_kpis)."""
+    client = _current_client(request)
+    if not client or not client.rut:
+        return Response(status_code=401)
+    linea = (linea or "").strip().upper()
+    if linea not in ("", "MUE", "EAU"):
+        linea = ""
+    base = "caja" if (base or "").strip().lower() == "caja" else "devengado"
+    d = (desde or "").strip() or "2025-01-01"
+    h = (hasta or "").strip() or date.today().isoformat()
+    conn = db.get_conn()
+    try:
+        datos = db.datos_kpis(conn, d, h, linea=linea, base=base)
+    finally:
+        conn.close()
+    return JSONResponse(datos)
+
+
 @app.get("/sii/estado")
 def sii_estado(request: Request):
     """Chequeo liviano y en vivo de la sesión con el SII, para el Cockpit.

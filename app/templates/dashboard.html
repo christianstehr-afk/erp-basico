@@ -35,6 +35,8 @@
     .sii-btn{background:var(--green);color:#fff;border:none;padding:12px 18px;border-radius:var(--radius);font-weight:700;font-size:13px;letter-spacing:.02em;cursor:pointer;white-space:nowrap}
     .sii-btn:hover{background:var(--green-deep)}
     .sii-btn:disabled{opacity:.6;cursor:default}
+    .kpi-link-btn{display:inline-block;text-decoration:none;background:none;border:1px solid var(--green);color:var(--green);padding:11px 18px;border-radius:var(--radius);font-weight:700;font-size:13px;letter-spacing:.02em;white-space:nowrap;margin-right:10px}
+    .kpi-link-btn:hover{background:var(--green);color:#fff}
     .sync-prog{margin-top:10px;width:220px;margin-left:auto;display:none}
     .sync-prog.on{display:block}
     .sync-bar-track{height:6px;background:#161616;border-radius:99px;overflow:hidden}
@@ -67,6 +69,7 @@
         <p>Lo urgente de un vistazo: rechazos, pagos y cobros vencidos, y rendiciones por pagar.</p>
       </div>
       <div style="text-align:right">
+        <a href="/kpis" class="kpi-link-btn">📊 KPI y Gráficos</a>
         <button type="button" id="sync-btn" class="sii-btn">↻ Actualizar con SII</button>
         <div id="sync-prog" class="sync-prog{% if sync and sync.corriendo %} on{% endif %}">
           <div class="sync-bar-track"><div id="sync-fill" class="sync-bar-fill indet"></div></div>

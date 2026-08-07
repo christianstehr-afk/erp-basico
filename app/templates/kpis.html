@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERP Básico · KPI y Gráficos</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    .kpi-input{background:#111;border:1px solid #262626;color:var(--snow);padding:9px 11px;border-radius:var(--radius);font-size:13px;font-family:var(--mono)}
+    .kpi-label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px}
+    .kpi-btn{background:var(--green);color:#fff;border:none;padding:10px 18px;border-radius:var(--radius);font-weight:700;font-size:13px;cursor:pointer}
+    .seg{display:inline-flex;border:1px solid #2b2b2b;border-radius:var(--radius);overflow:hidden}
+    .seg button{background:none;border:none;color:var(--slate);padding:9px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--mono);letter-spacing:.05em}
+    .seg button.on{background:var(--green);color:#fff}
+    .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0 26px}
+    .card-kpi{border:1px solid #1c1c1c;border-radius:var(--radius);background:#0f0f0f;padding:16px 18px}
+    .card-kpi .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--slate)}
+    .card-kpi .val{font-size:22px;font-weight:700;margin-top:8px}
+    .card-kpi .sub{font-size:11px;color:var(--slate);margin-top:6px;font-family:var(--mono)}
+    .ok-v{color:var(--green)} .bad-v{color:#e74c3c} .warn-v{color:#e6a817}
+    .panel{border:1px solid #1c1c1c;border-radius:var(--radius);background:#0f0f0f;padding:18px;margin-bottom:18px}
+    .panel h3{font-size:14px;margin:0 0 4px}
+    .panel .sub{font-size:11.5px;color:var(--slate);margin:0 0 12px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    @media (max-width:900px){.grid2{grid-template-columns:1fr}}
+    .chart-box{position:relative;height:260px}
+    .heat{width:100%;border-collapse:separate;border-spacing:3px}
+    .heat th{font-family:var(--mono);font-size:10px;color:var(--slate);font-weight:400;padding:4px}
+    .heat td{border-radius:4px;text-align:center;font-family:var(--mono);font-size:10.5px;padding:12px 4px;color:#dfe7df}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="https://www.e-auto.global/assets/logos/eauto_logo_new.webp" alt="e-auto">
+      <div class="divider"></div>
+      <span class="tag">ERP Básico</span>
+    </div>
+    <div class="userchip">
+      <span>Conectado al SII · {{ rut }}</span>
+      <form method="post" action="/logout">
+        <button type="submit">Salir</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="head">
+      <div class="eyebrow"><a href="/" style="color:var(--slate)">← Cockpit</a></div>
+      <h1>KPI y Gráficos</h1>
+      <p>Análisis por centros de resultado: cockpit del mes, resultado por línea y ciclo de caja.
+         Las tarjetas miran el mes en curso; los gráficos, el rango elegido.</p>
+    </div>
+
+    <!-- Filtros -->
+    <div class="panel">
+      <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <div><label class="kpi-label">Desde</label><input class="kpi-input" type="date" id="f-desde" value="{{ desde }}"></div>
+        <div><label class="kpi-label">Hasta</label><input class="kpi-input" type="date" id="f-hasta" value="{{ hasta }}"></div>
+        <div>
+          <label class="kpi-label">Línea</label>
+          <div class="seg" id="f-linea">
+            <button data-v="" class="on">Todas</button>
+            <button data-v="MUE">MUE</button>
+            <button data-v="EAU">EAU</button>
+          </div>
+        </div>
+        <div>
+          <label class="kpi-label">Base</label>
+          <div class="seg" id="f-base">
+            <button data-v="devengado" class="on" title="Por fecha de emisión del documento">Devengado</button>
+            <button data-v="caja" title="Por fecha del movimiento de caja">Caja</button>
+          </div>
+        </div>
+        <button class="kpi-btn" id="f-aplicar">Aplicar</button>
+        <span id="f-cargando" style="display:none;color:var(--slate);font-size:12px;font-family:var(--mono)">Cargando…</span>
+      </div>
+    </div>
+
+    <!-- Tarjetas cockpit -->
+    <div class="cards" id="cards"></div>
+
+    <!-- Graficos -->
+    <div class="grid2">
+      <div class="panel">
+        <h3>Ingresos vs egresos por mes</h3>
+        <p class="sub" id="sub-serie">Con línea de neto · base devengada</p>
+        <div class="chart-box"><canvas id="ch-serie"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Composición del gasto por categoría</h3>
+        <p class="sub">Barras apiladas por mes, según la línea seleccionada</p>
+        <div class="chart-box"><canvas id="ch-gasto"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Mix de ingresos por categoría</h3>
+        <p class="sub">Del rango seleccionado</p>
+        <div class="chart-box"><canvas id="ch-mix"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Mapa línea × categoría</h3>
+        <p class="sub">
+          <span class="seg" id="f-heat" style="vertical-align:middle">
+            <button data-v="gasto" class="on">Gasto</button>
+            <button data-v="ingreso">Ingreso</button>
+          </span>
+          &nbsp;intensidad = monto del rango (siempre global)
+        </p>
+        <div id="heatmap" style="overflow-x:auto"></div>
+      </div>
+      <div class="panel">
+        <h3>Caja acumulada + proyección 60 días</h3>
+        <p class="sub">Caja real del rango (movimientos CC) y compromisos por fecha tope · siempre global</p>
+        <div class="chart-box"><canvas id="ch-caja"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Aging de saldos (foto de hoy)</h3>
+        <p class="sub">Pendiente por cobrar y por pagar según días desde su fecha tope</p>
+        <div class="chart-box"><canvas id="ch-aging"></canvas></div>
+      </div>
+    </div>
+  </main>
+
+<script>
+(function(){
+  var charts = {};
+  var GREEN = "#009406", GREEN_D = "#0b6e22", RED = "#e74c3c", AMBER = "#e6a817",
+      BLUE = "#3b82f6", SNOW = "#e8e8e8", SLATE = "#7a7a7a", GRID_C = "rgba(255,255,255,.06)";
+  var PALETA = ["#009406","#0b6e22","#3b82f6","#e6a817","#8b5cf6","#e74c3c","#14b8a6","#f97316","#64748b","#a3e635"];
+  Chart.defaults.color = SLATE;
+  Chart.defaults.font.family = "Montserrat, Arial, sans-serif";
+  Chart.defaults.font.size = 11;
+
+  function clp(n){ return "$" + Math.round(n).toLocaleString("es-CL"); }
+  function clpCorto(n){
+    var a = Math.abs(n);
+    if (a >= 1e9) return "$" + (n/1e9).toLocaleString("es-CL", {maximumFractionDigits:1}) + " MM M";
+    if (a >= 1e6) return "$" + (n/1e6).toLocaleString("es-CL", {maximumFractionDigits:1}) + " M";
+    if (a >= 1e3) return "$" + (n/1e3).toLocaleString("es-CL", {maximumFractionDigits:0}) + " mil";
+    return clp(n);
+  }
+  function segVal(id){ return document.querySelector("#"+id+" button.on").dataset.v; }
+  function segWire(id, cb){
+    document.querySelectorAll("#"+id+" button").forEach(function(b){
+      b.addEventListener("click", function(){
+        document.querySelectorAll("#"+id+" button").forEach(function(x){x.classList.remove("on");});
+        b.classList.add("on");
+        if (cb) cb();
+      });
+    });
+  }
+  function destruir(id){ if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
+  var ejeMonto = { ticks: { callback: function(v){ return clpCorto(v); } }, grid: { color: GRID_C } };
+  var tipMonto = { callbacks: { label: function(c){
+    return (c.dataset.label ? c.dataset.label + ": " : "") + clp(c.parsed.y !== undefined ? c.parsed.y : c.parsed);
+  } } };
+
+  function tarjetas(t){
+    function delta(act, ant){
+      if (!ant) return "";
+      var d = act - ant, pct = Math.round(d * 100 / Math.abs(ant));
+      var cls = d >= 0 ? "ok-v" : "bad-v";
+      return "<div class='sub'>vs mes anterior: <span class='"+cls+"'>" + (d>=0?"+":"") + clpCorto(d) + " ("+(pct>=0?"+":"")+pct+"%)</span></div>";
+    }
+    var pctSin = t.docs_mes ? Math.round(t.docs_sin_imputar * 100 / t.docs_mes) : 0;
+    var html = "";
+    html += "<div class='card-kpi'><div class='lbl'>Caja neta del mes</div><div class='val "+(t.caja_neta_mes>=0?"ok-v":"bad-v")+"'>"+clpCorto(t.caja_neta_mes)+"</div>"+delta(t.caja_neta_mes, t.caja_neta_mes_ant)+"</div>";
+    html += "<div class='card-kpi'><div class='lbl'>Resultado del mes (devengado)</div><div class='val "+(t.resultado_mes>=0?"ok-v":"bad-v")+"'>"+clpCorto(t.resultado_mes)+"</div>"+delta(t.resultado_mes, t.resultado_mes_ant)+"</div>";
+    html += "<div class='card-kpi'><div class='lbl'>Por cobrar vencido</div><div class='val "+(t.por_cobrar_vencido.monto>0?"warn-v":"ok-v")+"'>"+clpCorto(t.por_cobrar_vencido.monto)+"</div><div class='sub'>"+t.por_cobrar_vencido.n+" documento(s) · <a href='/pagos/ingresos?volver=1'>gestionar</a></div></div>";
+    html += "<div class='card-kpi'><div class='lbl'>Por pagar vencido</div><div class='val "+(t.por_pagar_vencido.monto>0?"warn-v":"ok-v")+"'>"+clpCorto(t.por_pagar_vencido.monto)+"</div><div class='sub'>"+t.por_pagar_vencido.n+" documento(s) · <a href='/pagos/proveedores?volver=1'>gestionar</a></div></div>";
+    html += "<div class='card-kpi'><div class='lbl'>Rechazadas sin resolver</div><div class='val "+(t.rechazadas_sin_resolver>0?"bad-v":"ok-v")+"'>"+t.rechazadas_sin_resolver+"</div><div class='sub'>emitidas con reclamo y saldo</div></div>";
+    html += "<div class='card-kpi'><div class='lbl'>Sin imputar (mes)</div><div class='val "+(pctSin>0?"warn-v":"ok-v")+"'>"+pctSin+"%</div><div class='sub'>"+t.docs_sin_imputar+" de "+t.docs_mes+" docs · meta 0% al cierre</div></div>";
+    document.getElementById("cards").innerHTML = html;
+  }
+
+  function gSerie(d){
+    destruir("serie");
+    document.getElementById("sub-serie").textContent =
+      "Con línea de neto · base " + (d.base === "caja" ? "caja (movimientos CC)" : "devengada (fecha de emisión)") +
+      (d.linea ? " · línea " + d.linea : "");
+    var neto = d.serie.ingresos.map(function(v,i){ return v - d.serie.egresos[i]; });
+    charts.serie = new Chart(document.getElementById("ch-serie"), {
+      data: { labels: d.meses, datasets: [
+        { type:"bar", label:"Ingresos", data:d.serie.ingresos, backgroundColor:GREEN, borderRadius:3 },
+        { type:"bar", label:"Egresos", data:d.serie.egresos, backgroundColor:"rgba(255,255,255,.22)", borderRadius:3 },
+        { type:"line", label:"Neto", data:neto, borderColor:SNOW, backgroundColor:SNOW, tension:.25, pointRadius:3 }
+      ]},
+      options: { maintainAspectRatio:false, scales:{ y:ejeMonto, x:{grid:{display:false}} },
+                 plugins:{ tooltip:tipMonto, legend:{position:"bottom"} } }
+    });
+  }
+
+  function gGasto(d){
+    destruir("gasto");
+    var cats = Object.keys(d.gasto_categoria).filter(function(c){
+      return d.gasto_categoria[c].some(function(v){ return v > 0; });
+    });
+    charts.gasto = new Chart(document.getElementById("ch-gasto"), {
+      type:"bar",
+      data:{ labels:d.meses, datasets: cats.map(function(c,i){
+        return { label: c === "SIN" ? "Sin imputar" : c + " · " + (d.nombres_categorias[c] || c),
+                 data:d.gasto_categoria[c],
+                 backgroundColor: c === "SIN" ? "#4d4d4d" : PALETA[i % PALETA.length] };
+      })},
+      options:{ maintainAspectRatio:false,
+        scales:{ x:{stacked:true, grid:{display:false}}, y:Object.assign({stacked:true}, ejeMonto) },
+        plugins:{ tooltip:tipMonto, legend:{position:"bottom", labels:{boxWidth:10}} } }
+    });
+  }
+
+  function gMix(d){
+    destruir("mix");
+    var pares = Object.keys(d.mix_ingresos).map(function(c){ return [c, d.mix_ingresos[c]]; })
+      .filter(function(p){ return p[1] > 0; }).sort(function(a,b){ return b[1]-a[1]; });
+    charts.mix = new Chart(document.getElementById("ch-mix"), {
+      type:"doughnut",
+      data:{ labels: pares.map(function(p){ return (p[0]==="SIN" ? "Sin imputar" : p[0] + " · " + (d.nombres_categorias[p[0]] || p[0])); }),
+             datasets:[{ data: pares.map(function(p){ return p[1]; }),
+                         backgroundColor: pares.map(function(p,i){ return p[0]==="SIN" ? "#4d4d4d" : PALETA[i % PALETA.length]; }),
+                         borderColor:"#0f0f0f", borderWidth:2 }]},
+      options:{ maintainAspectRatio:false, cutout:"55%",
+        plugins:{ legend:{position:"right", labels:{boxWidth:10}},
+          tooltip:{ callbacks:{ label:function(c){
+            var tot = c.dataset.data.reduce(function(a,b){return a+b;},0);
+            return c.label + ": " + clp(c.parsed) + " (" + Math.round(c.parsed*100/tot) + "%)";
+          }}}}}
+    });
+  }
+
+  function gHeat(d){
+    var flujo = segVal("f-heat");
+    var cats = flujo === "gasto" ? d.heatmap.cats_gasto : d.heatmap.cats_ingreso;
+    var m = d.heatmap[flujo];
+    var max = 0;
+    m.forEach(function(fila){ fila.forEach(function(v){ if (v > max) max = v; }); });
+    var html = "<table class='heat'><tr><th></th>" + cats.map(function(c){ return "<th title='"+(d.nombres_categorias[c]||c)+"'>"+c+"</th>"; }).join("") + "</tr>";
+    d.heatmap.lineas.forEach(function(l, i){
+      html += "<tr><th style='text-align:right'>"+l+"</th>";
+      m[i].forEach(function(v){
+        var t = max ? v / max : 0;
+        var bg = "rgba(0,148,6," + (t === 0 ? 0.04 : (0.12 + t * 0.78)).toFixed(2) + ")";
+        html += "<td style='background:"+bg+"' title='"+clp(v)+"'>" + (v ? clpCorto(v).replace("$","") : "·") + "</td>";
+      });
+      html += "</tr>";
+    });
+    html += "</table>";
+    document.getElementById("heatmap").innerHTML = html;
+  }
+
+  function gCaja(d){
+    destruir("caja");
+    var pts = d.caja.real.map(function(p){ return {x:p.fecha, y:p.acum}; });
+    var pro = d.caja.proyeccion.map(function(p){ return {x:p.fecha, y:p.acum}; });
+    if (pts.length && pro.length) pro.unshift(pts[pts.length-1]);
+    charts.caja = new Chart(document.getElementById("ch-caja"), {
+      type:"line",
+      data:{ datasets:[
+        { label:"Caja real (acumulada en el rango)", data:pts, borderColor:GREEN, backgroundColor:GREEN, pointRadius:0, tension:.15 },
+        { label:"Proyección (fechas tope)", data:pro, borderColor:AMBER, backgroundColor:AMBER, borderDash:[6,4], pointRadius:0, tension:.15 }
+      ]},
+      options:{ maintainAspectRatio:false, parsing:true,
+        scales:{ x:{ type:"category", labels: pts.concat(pro).map(function(p){return p.x;}),
+                     ticks:{ maxTicksLimit:9 }, grid:{display:false} },
+                 y:ejeMonto },
+        plugins:{ tooltip:tipMonto, legend:{position:"bottom"} } }
+    });
+  }
+
+  function gAging(d){
+    destruir("aging");
+    var labs = ["Por vencer","1–30","31–60","61–90","+90 días"];
+    var kc = ["por_vencer","d0_30","d31_60","d61_90","d90"];
+    charts.aging = new Chart(document.getElementById("ch-aging"), {
+      type:"bar",
+      data:{ labels:labs, datasets:[
+        { label:"Por cobrar", data:kc.map(function(k){ return d.aging.cobrar[k]; }), backgroundColor:GREEN, borderRadius:3 },
+        { label:"Por pagar", data:kc.map(function(k){ return d.aging.pagar[k]; }), backgroundColor:"rgba(231,76,60,.75)", borderRadius:3 }
+      ]},
+      options:{ maintainAspectRatio:false, scales:{ y:ejeMonto, x:{grid:{display:false}} },
+        plugins:{ tooltip:tipMonto, legend:{position:"bottom"} } }
+    });
+  }
+
+  var ultimo = null;
+  function cargar(){
+    var q = "desde=" + document.getElementById("f-desde").value +
+            "&hasta=" + document.getElementById("f-hasta").value +
+            "&linea=" + segVal("f-linea") + "&base=" + segVal("f-base");
+    document.getElementById("f-cargando").style.display = "inline";
+    fetch("/kpis/data?" + q).then(function(r){
+      if (r.status === 401 || r.redirected) { location.href = "/"; return null; }
+      return r.json();
+    }).then(function(d){
+      if (!d) return;
+      ultimo = d;
+      tarjetas(d.tarjetas);
+      gSerie(d); gGasto(d); gMix(d); gHeat(d); gCaja(d); gAging(d);
+    }).catch(function(e){
+      document.getElementById("cards").innerHTML =
+        "<div class='card-kpi'><div class='lbl'>Error</div><div class='sub'>" + e + "</div></div>";
+    }).finally(function(){
+      document.getElementById("f-cargando").style.display = "none";
+    });
+  }
+
+  segWire("f-linea", cargar);
+  segWire("f-base", cargar);
+  segWire("f-heat", function(){ if (ultimo) gHeat(ultimo); });
+  document.getElementById("f-aplicar").addEventListener("click", cargar);
+  cargar();
+})();
+</script>
+</body>
+</html>
