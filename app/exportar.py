@@ -289,7 +289,8 @@ def _pagina_info(c, r, items, pagos) -> None:
     c.setFont("Helvetica-Bold", 8)
     c.setFillColorRGB(0.4, 0.4, 0.4)
     c.drawString(mx, y, "DESCRIPCIÓN")
-    c.drawString(mx + 95 * mm, y, "N° DOC")
+    c.drawString(mx + 78 * mm, y, "N° DOC")
+    c.drawString(mx + 103 * mm, y, "CENTRO")
     c.drawRightString(W - mx, y, "MONTO")
     y -= 2 * mm
     c.setStrokeColorRGB(0.85, 0.85, 0.85)
@@ -303,8 +304,9 @@ def _pagina_info(c, r, items, pagos) -> None:
             y = H - 22 * mm
             c.setFont("Helvetica", 9)
             c.setFillColorRGB(0.1, 0.1, 0.1)
-        c.drawString(mx, y, (it["descripcion"] or "")[:60])
-        c.drawString(mx + 95 * mm, y, str(it["numero_doc"] or "—")[:18])
+        c.drawString(mx, y, (it["descripcion"] or "")[:44])
+        c.drawString(mx + 78 * mm, y, str(it["numero_doc"] or "—")[:14])
+        c.drawString(mx + 103 * mm, y, (it["centro_costo"] or "—")[:14])
         c.drawRightString(W - mx, y, f"${_miles(it['monto'])}")
         y -= 5.5 * mm
 
@@ -478,6 +480,14 @@ def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False,
     c.setFillColorRGB(0.04, 0.04, 0.04)
     c.setFont("Helvetica-Bold", 10)
     c.drawString(mx, y, f"Fecha de {cfg['accion']} tope: {f['fecha_pago_tope'] or '—'}")
+    y -= 7 * mm
+
+    # Centro de resultado: si la factura está distribuida en varios centros
+    # (ver Módulo de distribución), `centro_multi` ya trae el detalle con
+    # porcentajes ("EAU-FIN 25% / MUE-FIN 75%"); si no, el centro simple.
+    centro_txt = f["centro_multi"] or f["centro_costo"] or "Sin imputar"
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(mx, y, f"Centro: {centro_txt}"[:100])
     y -= 10 * mm
 
     if f["descripcion"]:
@@ -666,10 +676,11 @@ def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
     W, H = A4
     mx = 15 * mm
     col_fecha = mx
-    col_tipo = mx + 22 * mm
-    col_desc = mx + 42 * mm
-    col_monto_r = W - mx - 33 * mm  # borde derecho de la columna Monto
-    col_origen = W - mx - 27 * mm
+    col_tipo = mx + 21 * mm
+    col_desc = mx + 39 * mm
+    col_centro = mx + 91 * mm  # hasta ~143mm: cabe "EAU-FIN 25% / MUE-FIN 75%" sin cortar
+    col_monto_r = W - mx - 17 * mm  # borde derecho de la columna Monto
+    col_origen = W - mx - 14 * mm
 
     def _encabezado(y: float) -> float:
         logo = _logo_reader()
@@ -710,6 +721,7 @@ def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
         c.drawString(col_fecha, y, "FECHA")
         c.drawString(col_tipo, y, "TIPO")
         c.drawString(col_desc, y, "DESCRIPCIÓN")
+        c.drawString(col_centro, y, "CENTRO")
         c.drawRightString(col_monto_r, y, "MONTO")
         c.drawString(col_origen, y, "ORIGEN")
         y -= 2 * mm
@@ -735,13 +747,20 @@ def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
         c.drawString(col_tipo, y, m["flujo"] or "")
 
         c.setFillColorRGB(0.1, 0.1, 0.1)
-        c.drawString(col_desc, y, (m["descripcion"] or "")[:48])
+        c.drawString(col_desc, y, (m["descripcion"] or "")[:28])
+
+        c.setFillColorRGB(0.35, 0.35, 0.35)
+        c.setFont("Helvetica", 7.5)
+        c.drawString(col_centro, y, (m["centro"] or "—")[:30])
+        c.setFont("Helvetica", 8.5)
 
         c.setFillColorRGB(*color_flujo)
         c.drawRightString(col_monto_r, y, f"${_miles(m['monto'])}")
 
         c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.setFont("Helvetica", 7.5)
         c.drawString(col_origen, y, _ORIGEN_LABEL.get(m["origen"], m["origen"] or ""))
+        c.setFont("Helvetica", 8.5)
 
         y -= 5.5 * mm
 
@@ -775,9 +794,12 @@ def _leeme_respaldo(fecha: str) -> str:
         "                        movimientos CC y el log de auditoría.\n"
         "- Adjuntos/Rendiciones  Boletas/facturas subidas a cada rendición.\n"
         "- Adjuntos/Facturas     Documentos subidos en la gestión de pago/cobro de\n"
-        "                        cada factura (ojo: los PDF de las facturas del SII\n"
-        "                        NO se guardan acá, se piden al SII al momento de\n"
-        "                        verlos con sesión activa; no hace falta respaldarlos).\n"
+        "                        cada factura.\n"
+        "- PDFs/                 Copia permanente de los PDF de facturas, boletas y\n"
+        "                        notas de crédito del SII, precargada por el sync (ver\n"
+        "                        pdf_store.py). Si falta alguno acá, se vuelve a pedir\n"
+        "                        al SII solo al abrirlo; no es indispensable para\n"
+        "                        reconstruir, pero evita repetir toda la precarga.\n"
         "- Codigo/               Copia completa del código de la app, tal como estaba\n"
         "                        corriendo al momento de generar este respaldo.\n\n"
         "Cómo reconstruir todo desde cero frente a un desastre:\n"
@@ -786,8 +808,9 @@ def _leeme_respaldo(fecha: str) -> str:
         "2. En el servidor nuevo, copiar BaseDatos/erp.db a la ruta de la variable de\n"
         "   entorno DB_PATH (en Railway: el volumen persistente, por defecto /data/erp.db).\n"
         "3. Copiar Adjuntos/Rendiciones a la ruta de ADJUNTOS_DIR (por defecto\n"
-        "   /data/adjuntos/rendiciones) y Adjuntos/Facturas a la ruta de\n"
-        "   ADJUNTOS_FACTURAS_DIR (por defecto /data/adjuntos/facturas).\n"
+        "   /data/adjuntos/rendiciones), Adjuntos/Facturas a la ruta de\n"
+        "   ADJUNTOS_FACTURAS_DIR (por defecto /data/adjuntos/facturas) y PDFs/ a la\n"
+        "   ruta de PDF_DIR (por defecto /data/pdfs).\n"
         "4. Iniciar la app normalmente: al arrancar crea/actualiza el esquema de la\n"
         "   base de datos solo, sin tocar los datos ya copiados.\n"
     )
@@ -795,12 +818,16 @@ def _leeme_respaldo(fecha: str) -> str:
 
 def construir_respaldo_completo(db_bytes: bytes, adjuntos_dir: Path,
                                 adjuntos_facturas_dir: Path, code_dir: Path,
-                                fecha: str) -> bytes:
+                                fecha: str, pdf_dir: Path | None = None) -> bytes:
     """Arma un .zip con TODO lo necesario para reconstruir la app desde cero
     frente a un desastre informático: la base de datos, los adjuntos
-    (rendiciones y gestión de pago de facturas) y una copia del código fuente
-    tal como está corriendo ahora mismo. Ver GET /respaldo en main.py (botón
-    "Descargar Respaldo" del Cockpit)."""
+    (rendiciones y gestión de pago de facturas), la copia permanente de PDFs
+    del SII (pdf_store, ver `pdf_dir`) y una copia del código fuente tal como
+    está corriendo ahora mismo. Ver GET /respaldo en main.py (botón
+    "Descargar Respaldo" del Cockpit).
+
+    `pdf_dir` es opcional (None = no se agrega esa carpeta) para que llamadas
+    viejas o tests que no la pasen sigan funcionando igual que antes."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("BaseDatos/erp.db", db_bytes)
@@ -814,6 +841,8 @@ def construir_respaldo_completo(db_bytes: bytes, adjuntos_dir: Path,
 
         _agregar_carpeta(adjuntos_dir, "Adjuntos/Rendiciones")
         _agregar_carpeta(adjuntos_facturas_dir, "Adjuntos/Facturas")
+        if pdf_dir is not None:
+            _agregar_carpeta(pdf_dir, "PDFs")
 
         if code_dir.exists():
             for p in code_dir.rglob("*"):
