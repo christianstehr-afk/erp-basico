@@ -667,18 +667,25 @@ def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
     """PDF del listado de Movimientos CC, en el mismo orden y rango con que se
     armó `movs` en pantalla (ver GET /movimientos/pdf en main.py: usa
     exactamente los mismos `movs`/`desde`/`hasta` que /movimientos)."""
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.units import mm
     from reportlab.pdfgen import canvas
 
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    W, H = A4
+    # Horizontal: la tabla tiene 6 columnas y la descripción es la que más
+    # importa leer completa; en A4 vertical quedaba muy angosta. Todas las
+    # páginas del documento salen en este mismo tamaño (reportlab no cambia
+    # de orientación entre showPage()).
+    c = canvas.Canvas(buf, pagesize=landscape(A4))
+    W, H = landscape(A4)
     mx = 15 * mm
     col_fecha = mx
-    col_tipo = mx + 21 * mm
-    col_desc = mx + 39 * mm
-    col_centro = mx + 91 * mm  # hasta ~143mm: cabe "EAU-FIN 25% / MUE-FIN 75%" sin cortar
+    col_tipo = mx + 23 * mm
+    col_desc = mx + 42 * mm
+    # Centro va angosto a propósito (lo que importa es la descripción): el
+    # código más largo real, "EAU-FIN 25% / MUE-FIN 75%", entra igual porque
+    # ahora hay mucho más ancho de página.
+    col_centro = mx + 180 * mm
     col_monto_r = W - mx - 17 * mm  # borde derecho de la columna Monto
     col_origen = W - mx - 14 * mm
 
@@ -747,11 +754,11 @@ def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
         c.drawString(col_tipo, y, m["flujo"] or "")
 
         c.setFillColorRGB(0.1, 0.1, 0.1)
-        c.drawString(col_desc, y, (m["descripcion"] or "")[:28])
+        c.drawString(col_desc, y, (m["descripcion"] or "")[:68])
 
         c.setFillColorRGB(0.35, 0.35, 0.35)
         c.setFont("Helvetica", 7.5)
-        c.drawString(col_centro, y, (m["centro"] or "—")[:30])
+        c.drawString(col_centro, y, (m["centro"] or "—")[:34])
         c.setFont("Helvetica", 8.5)
 
         c.setFillColorRGB(*color_flujo)
