@@ -99,6 +99,13 @@
             <button data-v="caja" title="Por fecha del movimiento de caja">Caja</button>
           </div>
         </div>
+        <div id="f-socios-wrap" style="display:none">
+          <label class="kpi-label">&nbsp;</label>
+          <label style="display:flex;align-items:center;gap:6px;height:30px;font-size:12.5px;color:var(--slate);cursor:pointer;white-space:nowrap">
+            <input type="checkbox" id="f-socios" checked style="accent-color:var(--green)">
+            Incluir retiros de socios (SOC)
+          </label>
+        </div>
         <button class="kpi-btn" id="f-aplicar">Aplicar</button>
         <span id="f-cargando" style="display:none;color:var(--slate);font-size:12px;font-family:var(--mono)">Cargando…</span>
       </div>
@@ -116,7 +123,7 @@
       </div>
       <div class="panel">
         <h3>Composición del gasto por categoría</h3>
-        <p class="sub">Barras apiladas por mes, según la línea seleccionada</p>
+        <p class="sub" id="sub-gasto">Barras apiladas por mes, según la línea seleccionada</p>
         <div class="chart-box"><canvas id="ch-gasto"></canvas></div>
       </div>
       <div class="panel">
@@ -137,7 +144,7 @@
       </div>
       <div class="panel">
         <h3>Caja acumulada + proyección 60 días</h3>
-        <p class="sub">Caja real del rango (movimientos CC) y compromisos por fecha tope · siempre global</p>
+        <p class="sub" id="sub-caja">Caja real del rango (movimientos CC) y compromisos por fecha tope · siempre global</p>
         <div class="chart-box"><canvas id="ch-caja"></canvas></div>
       </div>
       <div class="panel">
@@ -318,7 +325,7 @@
     destruir("serie");
     document.getElementById("sub-serie").textContent =
       "Con línea de neto · base " + (d.base === "caja" ? "caja (movimientos CC)" : "devengada (fecha de emisión)") +
-      (d.linea ? " · línea " + d.linea : "");
+      (d.linea ? " · línea " + d.linea : "") + " · sin retiros de socios";
     var neto = d.serie.ingresos.map(function(v,i){ return v - d.serie.egresos[i]; });
     charts.serie = new Chart(document.getElementById("ch-serie"), {
       data: { labels: d.meses, datasets: [
@@ -344,6 +351,9 @@
 
   function gGasto(d){
     destruir("gasto");
+    document.getElementById("sub-gasto").textContent =
+      "Barras apiladas por mes, según la línea seleccionada" +
+      (d.base === "caja" && !d.incluir_socios ? " · sin retiros de socios" : "");
     var cats = Object.keys(d.gasto_categoria).filter(function(c){
       return d.gasto_categoria[c].some(function(v){ return v > 0; });
     });
@@ -431,6 +441,9 @@
 
   function gCaja(d){
     destruir("caja");
+    document.getElementById("sub-caja").textContent =
+      "Caja real del rango (movimientos CC) y compromisos por fecha tope · siempre global" +
+      (!d.incluir_socios ? " · sin retiros de socios" : "");
     var pts = d.caja.real.map(function(p){ return {x:p.fecha, y:p.acum}; });
     var pro = d.caja.proyeccion.map(function(p){ return {x:p.fecha, y:p.acum}; });
     if (pts.length && pro.length) pro.unshift(pts[pts.length-1]);
@@ -474,10 +487,14 @@
   }
 
   var ultimo = null;
+  function actualizarVisibilidadSocios(){
+    document.getElementById("f-socios-wrap").style.display = segVal("f-base") === "caja" ? "block" : "none";
+  }
   function cargar(){
     var q = "desde=" + document.getElementById("f-desde").value +
             "&hasta=" + document.getElementById("f-hasta").value +
-            "&linea=" + segVal("f-linea") + "&base=" + segVal("f-base");
+            "&linea=" + segVal("f-linea") + "&base=" + segVal("f-base") +
+            "&incluir_socios=" + (document.getElementById("f-socios").checked ? "1" : "0");
     document.getElementById("f-cargando").style.display = "inline";
     fetch("/kpis/data?" + q).then(function(r){
       if (r.status === 401 || r.redirected) { location.href = "/"; return null; }
@@ -496,9 +513,11 @@
   }
 
   segWire("f-linea", cargar);
-  segWire("f-base", cargar);
+  segWire("f-base", function(){ actualizarVisibilidadSocios(); cargar(); });
   segWire("f-heat", function(){ if (ultimo) gHeat(ultimo); });
   document.getElementById("f-aplicar").addEventListener("click", cargar);
+  document.getElementById("f-socios").addEventListener("change", cargar);
+  actualizarVisibilidadSocios();
   cargar();
 })();
 </script>

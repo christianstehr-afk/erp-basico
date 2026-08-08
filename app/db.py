@@ -1884,7 +1884,7 @@ def detalle_aging(conn: sqlite3.Connection, tipo: str, bucket: str, linea: str,
 
 def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
                linea: str = "", base: str = "devengado",
-               hoy: str | None = None) -> dict:
+               hoy: str | None = None, incluir_socios: bool = True) -> dict:
     """Todo lo que la página /kpis necesita, en un solo dict JSON-listo.
 
     `linea`: '' (todas), 'MUE' o 'EAU' — filtra series, mix, gasto por
@@ -1893,6 +1893,14 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
     en curso y la foto de HOY, no el rango). La proyección de caja también es
     global: la caja es una sola.
     `base`: 'devengado' o 'caja' (ver comentario del módulo).
+    `incluir_socios`: solo tiene efecto con base='caja' (checkbox junto al
+    selector de Base en kpis.html, oculto en devengado). En False, los
+    retiros de socios (CATEGORIAS_GASTO_NO_OPERACIONAL) quedan afuera de
+    gasto por categoría, heatmap y caja acumulada/proyección — para poder
+    ver la caja "como si no hubiera retiros". La serie ingresos/egresos y el
+    resultado del mes NO se ven afectados por este toggle: esos SIEMPRE
+    excluyen los retiros, en cualquier base, porque no son un resultado real
+    del negocio (ver más abajo).
     `hoy`: inyectable para tests.
     """
     from datetime import date, timedelta
@@ -1933,6 +1941,11 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
     # puntual, para que el drill-down siempre calce con lo que se ve acá.
     from . import centros as _centros
     no_operacional = _centros.CATEGORIAS_GASTO_NO_OPERACIONAL
+    # Además de la exclusión permanente de arriba (serie/resultado), el
+    # checkbox "Incluir retiros de socios" (solo visible con base='caja')
+    # puede pedir que gasto por categoría/heatmap/caja acumulada TAMBIÉN los
+    # dejen afuera, para ver la caja completa "como si no hubiera retiros".
+    excl_vista = no_operacional if (base == "caja" and not incluir_socios) else frozenset()
     ser_ing = [0] * len(meses)
     ser_egr = [0] * len(meses)
     for f in fuente_ing:
@@ -1956,6 +1969,8 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
     for f in fuente_egr:
         for c, m in f["detalle"]:
             l, cat = (c or "").partition("-")[0], _cat(c or "")
+            if excl_vista and cat in excl_vista:
+                continue
             if l in heat_g and cat in heat_g[l]:
                 heat_g[l][cat] += m
             if pref and not (c or "").startswith(pref):
@@ -1988,10 +2003,17 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
     aging = {"cobrar": _aging("venta"), "pagar": _aging("compra")}
 
     # ---------- 5.5 caja acumulada del rango + proyección global a 60 días
+    # Ojo: esta caja SIEMPRE es real (movimientos_cc), sin importar `base` —
+    # por eso, a diferencia de gasto_categoria/heatmap (que solo excluyen
+    # socios si base='caja'), acá basta con `excl_vista` (que ya viene vacío
+    # si base='devengado' o si el checkbox pide incluirlos).
     movs_caja = _movs_caja_con_centros(conn, desde, min(hasta, hoy))
     por_dia: dict[str, int] = {}
     for m in movs_caja:
-        neto = sum(x for _, x in m["detalle"]) * (1 if m["flujo"] == "Ingreso" else -1)
+        detalle = m["detalle"]
+        if excl_vista:
+            detalle = [(c, v) for c, v in detalle if _cat(c or "") not in excl_vista]
+        neto = sum(x for _, x in detalle) * (1 if m["flujo"] == "Ingreso" else -1)
         por_dia[m["fecha"]] = por_dia.get(m["fecha"], 0) + neto
     caja_real = []
     acum = 0
@@ -2113,6 +2135,7 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
     nombres = dict(_centros.CATEGORIAS_GASTO + _centros.CATEGORIAS_INGRESO)
     return {
         "meses": meses, "linea": linea, "base": base, "hoy": hoy,
+        "incluir_socios": incluir_socios,
         "serie": {"ingresos": ser_ing, "egresos": ser_egr},
         "gasto_categoria": gasto_cat,
         "mix_ingresos": mix_ing,

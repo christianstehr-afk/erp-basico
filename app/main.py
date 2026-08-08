@@ -285,8 +285,12 @@ def kpis_pagina(request: Request, desde: str = "", hasta: str = ""):
 
 @app.get("/kpis/data")
 def kpis_data(request: Request, desde: str = "", hasta: str = "",
-              linea: str = "", base: str = "devengado"):
-    """Datos JSON del dashboard de KPIs (ver db.datos_kpis)."""
+              linea: str = "", base: str = "devengado", incluir_socios: str = "1"):
+    """Datos JSON del dashboard de KPIs (ver db.datos_kpis).
+
+    `incluir_socios` solo importa con base='caja' (en devengado se ignora):
+    controla si los retiros de socios (categoría SOC) cuentan en gasto por
+    categoría/heatmap/caja acumulada, para poder ver la caja con o sin ellos."""
     client = _current_client(request)
     if not client or not client.rut:
         return Response(status_code=401)
@@ -298,7 +302,8 @@ def kpis_data(request: Request, desde: str = "", hasta: str = "",
     h = (hasta or "").strip() or date.today().isoformat()
     conn = db.get_conn()
     try:
-        datos = db.datos_kpis(conn, d, h, linea=linea, base=base)
+        datos = db.datos_kpis(conn, d, h, linea=linea, base=base,
+                              incluir_socios=(incluir_socios or "1") != "0")
     finally:
         conn.close()
     return JSONResponse(datos)
