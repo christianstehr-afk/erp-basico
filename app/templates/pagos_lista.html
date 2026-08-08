@@ -77,7 +77,7 @@
             <th class="sortable" data-col="3" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Descripción <span class="arrow"></span></th>
             <th class="sortable" data-col="4" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none" title="Centro de resultado (línea de negocio + categoría)">Centro <span class="arrow"></span></th>
             <th class="sortable" data-col="5" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha factura <span class="arrow"></span></th>
-            <th class="sortable" data-col="6" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">Fecha tope <span class="arrow"></span></th>
+            <th class="sortable" data-col="6" data-type="text" style="padding:12px 14px;cursor:pointer;user-select:none">{{ 'Fecha tope/pago' if seccion == 'proveedores' else 'Fecha tope' }} <span class="arrow"></span></th>
             <th class="sortable" data-col="7" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">Monto <span class="arrow"></span></th>
             <th class="sortable" data-col="8" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none;text-align:right">{{ cfg.label_deuda }} <span class="arrow"></span></th>
             <th class="sortable" data-col="9" data-type="num" style="padding:12px 14px;cursor:pointer;user-select:none">Estado <span class="arrow"></span></th>
@@ -116,7 +116,8 @@
               {% else %}<span style="color:var(--slate)">—</span>{% endif %}
             </td>
             <td data-value="{{ f['fecha_emision'] or '' }}" style="padding:11px 14px;font-family:var(--mono)">{{ f["fecha_emision"] or "—" }}</td>
-            <td data-value="{{ f['fecha_pago_tope'] or '9999-99-99' }}" style="padding:11px 14px;font-family:var(--mono)">{{ f["fecha_pago_tope"] or "—" }}</td>
+            {% set fecha_tope_pago = f['fecha_pago_completo'] if (seccion == 'proveedores' and pagada and f['fecha_pago_completo']) else f['fecha_pago_tope'] %}
+            <td data-value="{{ fecha_tope_pago or '9999-99-99' }}" style="padding:11px 14px;font-family:var(--mono)">{{ fecha_tope_pago or "—" }}</td>
             <td data-value="{{ 0 if anulada else f['total'] }}" style="padding:11px 14px;text-align:right;font-family:var(--mono)">{% if anulada %}---{% else %}${{ "{:,.0f}".format(f["total"]).replace(",", ".") }}{% endif %}</td>
             <td data-value="{{ 0 if anulada else (f['total'] - f['pagado']) }}" style="padding:11px 14px;text-align:right;font-family:var(--mono);color:{{ color }}">{% if anulada %}---{% else %}${{ "{:,.0f}".format(f["total"] - f["pagado"]).replace(",", ".") }}{% endif %}</td>
             <td data-value="{{ orden_estado }}" style="padding:11px 14px">

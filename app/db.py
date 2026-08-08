@@ -564,7 +564,17 @@ def facturas_con_pago_en_rango(conn: sqlite3.Connection, tipo: str, desde: str, 
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo,
                f.pdf_path, f.descripcion, f.anulada_por, f.centro_costo,
                {_SQL_CENTRO_MULTI} AS centro_multi,
-               COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
+               COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado,
+               (
+                   SELECT p.fecha FROM (
+                       SELECT pg.fecha AS fecha, pg.id AS id,
+                              SUM(pg.monto) OVER (ORDER BY pg.fecha ASC, pg.id ASC) AS acumulado
+                       FROM pagos pg WHERE pg.factura_id = f.id
+                   ) p
+                   WHERE p.acumulado >= f.total
+                   ORDER BY p.fecha ASC, p.id ASC
+                   LIMIT 1
+               ) AS fecha_pago_completo
         FROM facturas f
         WHERE f.tipo = ?
           AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
