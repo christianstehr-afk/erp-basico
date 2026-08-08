@@ -1566,12 +1566,23 @@ def _movs_caja_con_centros(conn: sqlite3.Connection, desde: str, hasta: str) -> 
     return movs
 
 
-def _suma_linea(detalle: list[tuple[str, int]], linea: str) -> int:
-    """Monto del detalle que corresponde a la línea pedida ('' = todo)."""
-    if not linea:
-        return sum(m for _, m in detalle)
-    pref = linea + "-"
-    return sum(m for c, m in detalle if (c or "").startswith(pref))
+def _suma_linea(detalle: list[tuple[str, int]], linea: str,
+                excluir_cat: frozenset[str] | None = None) -> int:
+    """Monto del detalle que corresponde a la línea pedida ('' = todo).
+    `excluir_cat`, si viene, descarta las categorías indicadas (p. ej.
+    CATEGORIAS_GASTO_NO_OPERACIONAL: retiros de socios, que no son costo
+    operacional y no deben ensuciar la serie de ingresos/egresos ni el
+    resultado del mes)."""
+    pref = (linea + "-") if linea else ""
+    total = 0
+    for c, m in detalle:
+        c = c or ""
+        if pref and not c.startswith(pref):
+            continue
+        if excluir_cat and _cat(c) in excluir_cat:
+            continue
+        total += m
+    return total
 
 
 def _cat(centro: str) -> str:
@@ -1645,17 +1656,25 @@ def _etiqueta_centro(detalle: list[tuple[str, int]], total_ref: int) -> str:
 
 
 def _matches_filtro(centro: str | None, linea: str, categoria: str | None,
-                    cats_conocidas: set[str]) -> bool:
+                    cats_conocidas: set[str],
+                    excluir_cat: frozenset[str] = frozenset()) -> bool:
     """True si `centro` ('LINEA-CAT' o vacío) cae dentro del filtro de
     línea+categoría con que se armó un gráfico de /kpis. Replica exactamente
     la lógica de filtrado de datos_kpis (mismo `pref`/mismo criterio de SIN)
     para que detalle_documentos() liste justo los documentos que componen la
-    cifra en la que se hizo clic — ni uno más, ni uno menos."""
+    cifra en la que se hizo clic — ni uno más, ni uno menos.
+
+    `excluir_cat`: categorías a descartar cuando `categoria` es None (clic en
+    la barra de la serie ingresos/egresos, sin categoría puntual) — así se
+    replica la exclusión de CATEGORIAS_GASTO_NO_OPERACIONAL que hace
+    datos_kpis en esa misma serie. No aplica si se pidió una categoría
+    puntual (p. ej. clic directo en el segmento SOC del gasto por
+    categoría: ahí sí debe listarla, es donde se la puede ver aparte)."""
     c = centro or ""
     if linea and not c.startswith(linea + "-"):
         return False
     if categoria is None:
-        return True
+        return _cat(c) not in excluir_cat
     cat = _cat(c)
     if categoria == "SIN":
         if linea:
@@ -1677,7 +1696,11 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
     (serie, gasto por categoría); sin él, se usa todo el rango desde/hasta
     (mix, heatmap, que son del período completo). `categoria` acota a una
     categoría del catálogo, o 'SIN' para sin imputar; sin ella, incluye
-    todas (clic en la serie de ingresos/egresos).
+    todas MENOS las categorías de CATEGORIAS_GASTO_NO_OPERACIONAL (retiros
+    de socios y similares) — igual que datos_kpis excluye esas categorías de
+    la serie de ingresos/egresos (clic en esa barra sin categoría puntual).
+    Un clic directo en su segmento del gasto por categoría (categoria='SOC')
+    sí las lista: ahí es donde se pueden ver separadas.
 
     Cada fila trae, además del monto y el total del documento completo (por
     si está pagado/imputado solo en parte), lo necesario para armar un link
@@ -1685,6 +1708,7 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
     """
     from . import centros as _centros
     cats = {c for c, _ in (_centros.CATEGORIAS_GASTO if flujo == "egreso" else _centros.CATEGORIAS_INGRESO)}
+    excluir = _centros.CATEGORIAS_GASTO_NO_OPERACIONAL if (flujo == "egreso" and categoria is None) else frozenset()
     d1, d2 = (f"{mes}-01", f"{mes}-31") if mes else (desde, hasta)
     filas: list[dict] = []
 
@@ -1756,7 +1780,7 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
             else:
                 detalle = [((m["centro_manual"] or ""), monto_mov)]
 
-            monto = sum(v for c, v in detalle if _matches_filtro(c, linea, categoria, cats))
+            monto = sum(v for c, v in detalle if _matches_filtro(c, linea, categoria, cats, excluir))
             if not monto:
                 continue
 
@@ -1797,7 +1821,7 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
         (tipo, d1, d2, *TIPOS_NO_PAGABLES),
     ).fetchall()
     for x in _detalle_por_centro(conn, facts, "total"):
-        monto = sum(v for c, v in x["detalle"] if _matches_filtro(c, linea, categoria, cats))
+        monto = sum(v for c, v in x["detalle"] if _matches_filtro(c, linea, categoria, cats, excluir))
         if not monto:
             continue
         f = x["fila"]
@@ -1817,7 +1841,7 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
                WHERE r.fecha >= ? AND r.fecha <= ?""",
             (d1, d2),
         ).fetchall():
-            if not _matches_filtro(r["centro"], linea, categoria, cats):
+            if not _matches_filtro(r["centro"], linea, categoria, cats, excluir):
                 continue
             filas.append({
                 "fecha": r["fecha"],
@@ -1900,6 +1924,15 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
             fuente_egr.append({"mes": _mes(r["fecha"]), "detalle": [((r["centro"] or ""), r["monto"] or 0)]})
 
     # ---------- 5.1 serie mensual ingresos / egresos / neto
+    # Los egresos de CATEGORIAS_GASTO_NO_OPERACIONAL (retiros de socios: no
+    # son costo del negocio) quedan FUERA de esta serie y del resultado, para
+    # no ensuciar el resultado por línea — pero SÍ se ven en gasto por
+    # categoría/heatmap (más abajo, sin filtrar) y en la caja real (son
+    # plata que sale de verdad). detalle_documentos() replica exactamente
+    # esta misma exclusión cuando se hace clic en la barra sin categoría
+    # puntual, para que el drill-down siempre calce con lo que se ve acá.
+    from . import centros as _centros
+    no_operacional = _centros.CATEGORIAS_GASTO_NO_OPERACIONAL
     ser_ing = [0] * len(meses)
     ser_egr = [0] * len(meses)
     for f in fuente_ing:
@@ -1907,10 +1940,9 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
             ser_ing[idx[f["mes"]]] += _suma_linea(f["detalle"], linea)
     for f in fuente_egr:
         if f["mes"] in idx:
-            ser_egr[idx[f["mes"]]] += _suma_linea(f["detalle"], linea)
+            ser_egr[idx[f["mes"]]] += _suma_linea(f["detalle"], linea, no_operacional)
 
     # ---------- 5.2 gasto por categoría por mes / 5.3 mix ingresos / 5.4 heatmap
-    from . import centros as _centros
     cats_g = [c for c, _ in _centros.CATEGORIAS_GASTO]
     cats_i = [c for c, _ in _centros.CATEGORIAS_INGRESO]
     lineas_cod = [l for l, _ in _centros.LINEAS]
@@ -2015,13 +2047,22 @@ def datos_kpis(conn: sqlite3.Connection, desde: str, hasta: str,
         return tot
 
     def _resultado(mes: str) -> int:
+        # Igual que la serie ingresos/egresos: los retiros de socios
+        # (CATEGORIAS_GASTO_NO_OPERACIONAL) no cuentan para el resultado, así
+        # que hay que mirar el centro de cada factura/ítem, no solo el total
+        # del documento (una factura distribuida podría tener parte SOC).
         d1, d2 = mes + "-01", mes + "-31"
         ing = sum(f["total"] or 0 for f in _facturas_devengadas(conn, "venta", d1, d2))
-        egr = sum(f["total"] or 0 for f in _facturas_devengadas(conn, "compra", d1, d2))
-        egr += conn.execute(
-            """SELECT COALESCE(SUM(i.monto),0) FROM rendiciones r
-               JOIN rendicion_items i ON i.rendicion_id = r.id
-               WHERE r.fecha >= ? AND r.fecha <= ?""", (d1, d2)).fetchone()[0]
+        egr = sum(
+            _suma_linea(x["detalle"], "", no_operacional)
+            for x in _detalle_por_centro(conn, _facturas_devengadas(conn, "compra", d1, d2), "total")
+        )
+        for r in conn.execute(
+            """SELECT i.centro_costo AS centro, i.monto AS monto
+               FROM rendiciones r JOIN rendicion_items i ON i.rendicion_id = r.id
+               WHERE r.fecha >= ? AND r.fecha <= ?""", (d1, d2)).fetchall():
+            if _cat(r["centro"] or "") not in no_operacional:
+                egr += r["monto"] or 0
         return ing - egr
 
     def _vencido(tipo: str) -> dict:

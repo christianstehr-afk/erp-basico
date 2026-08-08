@@ -51,7 +51,23 @@ CATEGORIAS_GASTO: list[tuple[str, str]] = [
     # Agregada 2026-08-07 como contraparte del ingreso PST, para poder netear
     # postventa cobrada contra postventa asumida en cada línea.
     ("PST", "Postventa y garantías"),
+    # Retiros de utilidades/capital hacia los socios: NO es un costo
+    # operacional (no mide qué tan bien anda el negocio), es plata que sale
+    # de la caja hacia el dueño. Agregada 2026-08-07 a pedido de Christian.
+    # Ver CATEGORIAS_GASTO_NO_OPERACIONAL: por eso esta categoría se excluye
+    # del resultado (P&L) y de la serie ingresos/egresos en db.datos_kpis,
+    # pero SÍ cuenta en la caja (real y proyectada: es plata que sale de
+    # verdad) y se puede ver separada en el gráfico de gasto por categoría
+    # y en el heatmap, para trackearla sin ensuciar el resultado por línea.
+    ("SOC", "Retiros de socios"),
 ]
+
+# Categorías de GASTO que no son costo operacional del negocio (hoy solo los
+# retiros de socios). db.datos_kpis las excluye del resultado/serie pero las
+# deja visibles en gasto por categoría, heatmap y caja. Agregar acá una
+# categoría nueva de este tipo alcanza para que quede excluida en todos
+# lados (no hay que tocar db.py).
+CATEGORIAS_GASTO_NO_OPERACIONAL: frozenset[str] = frozenset({"SOC"})
 
 CATEGORIAS_INGRESO: list[tuple[str, str]] = [
     ("VEH", "Venta de vehículos"),
