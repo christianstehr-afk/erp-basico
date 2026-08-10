@@ -262,6 +262,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_mov_cc_pago
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mov_cc_rend_pago
     ON movimientos_cc(rendicion_pago_id) WHERE rendicion_pago_id IS NOT NULL;
 
+-- Distribución en varios centros de un movimiento MANUAL de Movimientos CC
+-- (mismo patrón que factura_centros para facturas: p. ej. una transferencia
+-- que paga a la vez algo de mu-EVT y algo de E-Auto). Solo aplica a filas
+-- origen='manual' (las de factura/rendición heredan su centro del documento,
+-- ver movimientos_cc_en_rango). Si un movimiento NO tiene filas acá, se sigue
+-- usando su columna simple movimientos_cc.centro_costo (caso de un solo
+-- centro, la mayoría). Si SÍ tiene filas (2 o más), esas filas son la fuente
+-- de verdad y movimientos_cc.centro_costo queda en NULL; la suma de sus
+-- montos debe ser siempre igual a movimientos_cc.monto (se valida al
+-- guardar, ver set_distribucion_movimiento).
+CREATE TABLE IF NOT EXISTS movimiento_centros (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    movimiento_id INTEGER NOT NULL,
+    centro        TEXT NOT NULL,              -- "LINEA-CAT" (ver centros.py)
+    monto         INTEGER NOT NULL,
+    FOREIGN KEY (movimiento_id) REFERENCES movimientos_cc(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_movimiento_centros ON movimiento_centros(movimiento_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_movimiento_centros_unico
+    ON movimiento_centros(movimiento_id, centro);
+
 -- Módulo 6 · Log de auditoría: registra fecha, hora y una descripción de cada
 -- operación relevante hecha en la app (crear/editar/eliminar), para poder
 -- reconstruir qué pasó si algo se borra por accidente (p. ej. una rendición).
@@ -527,6 +549,17 @@ _SQL_CENTRO_MULTI = """
         SELECT fc.centro AS centro,
                CAST(ROUND(fc.monto * 100.0 / f.total) AS INTEGER) AS pct
         FROM factura_centros fc WHERE fc.factura_id = f.id ORDER BY fc.centro
+    ))
+"""
+
+# Igual que _SQL_CENTRO_MULTI pero para un movimiento MANUAL distribuido en
+# varios centros (movimiento_centros, ver esquema): usa el alias `m` de
+# movimientos_cc en vez de `f` de facturas.
+_SQL_CENTRO_MULTI_MOV = """
+    (SELECT GROUP_CONCAT(centro || ' ' || pct || '%', ' / ') FROM (
+        SELECT mc.centro AS centro,
+               CAST(ROUND(mc.monto * 100.0 / m.monto) AS INTEGER) AS pct
+        FROM movimiento_centros mc WHERE mc.movimiento_id = m.id ORDER BY mc.centro
     ))
 """
 
@@ -1243,6 +1276,7 @@ def movimientos_cc_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) ->
         f"""
         SELECT m.*,
                COALESCE(
+                   {_SQL_CENTRO_MULTI_MOV},
                    {_SQL_CENTRO_MULTI},
                    f.centro_costo,
                    REPLACE((SELECT GROUP_CONCAT(DISTINCT i.centro_costo)
@@ -1297,21 +1331,93 @@ def editar_movimiento_manual(conn: sqlite3.Connection, mid: int, fecha: str, flu
                              descripcion: str, monto: int,
                              centro: str | None = None) -> bool:
     """Solo actualiza si la fila es manual (nunca toca una fila automática).
-    Devuelve True si se actualizó algo."""
+    Devuelve True si se actualizó algo.
+
+    Guardar un centro único (o ninguno) siempre vuelve al modo simple: si el
+    movimiento estaba distribuido en varios centros (movimiento_centros), esa
+    distribución se borra (mismo criterio que set_centro_costo para
+    facturas). Quien quiera (re)distribuirlo llama después a
+    set_distribucion_movimiento."""
     cur = conn.execute(
         "UPDATE movimientos_cc SET fecha = ?, flujo = ?, descripcion = ?, monto = ?, "
         "centro_costo = ? WHERE id = ? AND origen = 'manual'",
         (fecha, flujo, descripcion, monto, centro or None, mid),
     )
+    if cur.rowcount > 0:
+        conn.execute("DELETE FROM movimiento_centros WHERE movimiento_id = ?", (mid,))
     return cur.rowcount > 0
 
 
 def eliminar_movimiento_manual(conn: sqlite3.Connection, mid: int) -> bool:
     """Solo borra si la fila es manual. Devuelve True si se borró algo."""
+    conn.execute("DELETE FROM movimiento_centros WHERE movimiento_id = ?", (mid,))
     cur = conn.execute(
         "DELETE FROM movimientos_cc WHERE id = ? AND origen = 'manual'", (mid,)
     )
     return cur.rowcount > 0
+
+
+def centros_de_movimiento(conn: sqlite3.Connection, movimiento_id: int) -> list[sqlite3.Row]:
+    """Distribución de un movimiento manual en varios centros (vacío si no
+    está distribuido: en ese caso manda su centro_costo simple)."""
+    return conn.execute(
+        "SELECT id, centro, monto FROM movimiento_centros WHERE movimiento_id = ? ORDER BY centro",
+        (movimiento_id,),
+    ).fetchall()
+
+
+def distribuciones_de_movimientos(conn: sqlite3.Connection,
+                                  ids: list[int]) -> dict[int, list[sqlite3.Row]]:
+    """Distribución en centros de varios movimientos manuales a la vez,
+    agrupada por movimiento_id (vacía para los que no están distribuidos).
+    Pensada para pintar la lista de /movimientos sin una consulta por fila."""
+    out: dict[int, list[sqlite3.Row]] = {}
+    if not ids:
+        return out
+    marcadores = ",".join("?" * len(ids))
+    for r in conn.execute(
+        f"SELECT movimiento_id, centro, monto FROM movimiento_centros "
+        f"WHERE movimiento_id IN ({marcadores}) ORDER BY movimiento_id, centro",
+        tuple(ids),
+    ).fetchall():
+        out.setdefault(r["movimiento_id"], []).append(r)
+    return out
+
+
+def set_distribucion_movimiento(conn: sqlite3.Connection, movimiento_id: int, total: int,
+                                distribucion: list[dict]) -> str | None:
+    """Distribuye un movimiento MANUAL de Movimientos CC en 2 o más centros
+    (p. ej. una transferencia que paga a la vez algo de mu-EVT y algo de
+    E-Auto). Devuelve None si quedó guardada, o un mensaje de error si no pasó
+    la validación (y no escribe nada en ese caso). Mismas reglas que
+    set_distribucion_factura: al menos 2 filas, sin centros repetidos, todos
+    los montos > 0, y la suma debe calzar EXACTO con `total` (el monto del
+    movimiento). Al guardar, se limpia movimientos_cc.centro_costo (la
+    distribución pasa a ser la fuente de verdad de este movimiento)."""
+    filas = [
+        {"centro": (d.get("centro") or "").strip().upper(), "monto": int(d.get("monto") or 0)}
+        for d in distribucion
+    ]
+    filas = [d for d in filas if d["centro"] and d["monto"] > 0]
+    if len(filas) < 2:
+        return "Se necesitan al menos 2 centros con monto mayor a cero."
+    vistos = {d["centro"] for d in filas}
+    if len(vistos) != len(filas):
+        return "No se puede repetir el mismo centro."
+    if sum(d["monto"] for d in filas) != int(total):
+        return "La suma de los montos debe ser igual al monto del movimiento."
+    conn.execute("DELETE FROM movimiento_centros WHERE movimiento_id = ?", (movimiento_id,))
+    conn.executemany(
+        "INSERT INTO movimiento_centros (movimiento_id, centro, monto) VALUES (?, ?, ?)",
+        [(movimiento_id, d["centro"], d["monto"]) for d in filas],
+    )
+    conn.execute("UPDATE movimientos_cc SET centro_costo = NULL WHERE id = ?", (movimiento_id,))
+    return None
+
+
+def quitar_distribucion_movimiento(conn: sqlite3.Connection, movimiento_id: int) -> None:
+    """Vuelve el movimiento al modo simple (un solo centro, o ninguno)."""
+    conn.execute("DELETE FROM movimiento_centros WHERE movimiento_id = ?", (movimiento_id,))
 
 
 # ---------------------------------------------------------------------------
@@ -1522,7 +1628,8 @@ def _facturas_devengadas(conn: sqlite3.Connection, tipo: str, desde: str, hasta:
 def _movs_caja_con_centros(conn: sqlite3.Connection, desde: str, hasta: str) -> list[dict]:
     """Movimientos CC del rango con su detalle (centro, monto) prorrateado:
     filas de factura heredan la imputación del documento; las de rendición,
-    la de sus ítems; las manuales usan su propio centro. Sin centro => ''."""
+    la de sus ítems; las manuales usan su propio centro (o su distribución en
+    varios, ver movimiento_centros, si la tienen). Sin centro => ''."""
     movs = []
     filas = conn.execute(
         """
@@ -1557,6 +1664,18 @@ def _movs_caja_con_centros(conn: sqlite3.Connection, desde: str, hasta: str) -> 
             g = items_rend.setdefault(r["rendicion_id"], {})
             c = r["centro_costo"] or ""
             g[c] = g.get(c, 0) + (r["monto"] or 0)
+    # Movimientos manuales (sin factura ni rendición detrás) distribuidos en
+    # varios centros: su detalle ya suma exacto el monto del movimiento (no
+    # hay "pago parcial" que prorratear, a diferencia de facturas/rendiciones).
+    ids_mov = {r["id"] for r in filas if not r["factura_id"] and not r["rendicion_id"]}
+    distrib_mov: dict[int, list[tuple[str, int]]] = {}
+    if ids_mov:
+        marcadores = ",".join("?" * len(ids_mov))
+        for r in conn.execute(
+            f"SELECT movimiento_id, centro, monto FROM movimiento_centros WHERE movimiento_id IN ({marcadores})",
+            tuple(ids_mov),
+        ).fetchall():
+            distrib_mov.setdefault(r["movimiento_id"], []).append((r["centro"], r["monto"]))
     for m in filas:
         monto = m["monto"] or 0
         if m["factura_id"]:
@@ -1571,7 +1690,8 @@ def _movs_caja_con_centros(conn: sqlite3.Connection, desde: str, hasta: str) -> 
             total_r = sum(g.values())
             detalle = _prorratear(list(g.items()), total_r, monto) if total_r else [("", monto)]
         else:
-            detalle = [((m["centro_manual"] or ""), monto)]
+            dmov = distrib_mov.get(m["id"])
+            detalle = dmov if dmov else [((m["centro_manual"] or ""), monto)]
         movs.append({"fecha": m["fecha"], "flujo": m["flujo"], "detalle": detalle})
     return movs
 
@@ -1733,7 +1853,7 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
         tipo_mov = "Ingreso" if flujo == "ingreso" else "Egreso"
         filas_mov = conn.execute(
             """
-            SELECT m.fecha AS fecha, m.monto AS monto, m.origen AS origen,
+            SELECT m.id AS mov_id, m.fecha AS fecha, m.monto AS monto, m.origen AS origen,
                    m.descripcion AS descripcion, m.centro_costo AS centro_manual,
                    p.factura_id AS factura_id, f.total AS ftotal, f.centro_costo AS fcentro,
                    f.codigo_sii AS codigo_sii, f.documento AS documento, f.folio AS folio,
@@ -1772,6 +1892,18 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
                 f"SELECT id, nombre FROM rendiciones WHERE id IN ({marcadores})", tuple(ids_rend)
             ).fetchall():
                 nombres_rend[r["id"]] = r["nombre"]
+        # Movimientos manuales distribuidos en varios centros (ver
+        # movimiento_centros): mismo criterio que _movs_caja_con_centros, la
+        # distribución ya suma exacto el monto del movimiento.
+        ids_mov = {r["mov_id"] for r in filas_mov if not r["factura_id"] and not r["rendicion_id"]}
+        distrib_mov: dict[int, list[tuple[str, int]]] = {}
+        if ids_mov:
+            marcadores = ",".join("?" * len(ids_mov))
+            for r in conn.execute(
+                f"SELECT movimiento_id, centro, monto FROM movimiento_centros WHERE movimiento_id IN ({marcadores})",
+                tuple(ids_mov),
+            ).fetchall():
+                distrib_mov.setdefault(r["movimiento_id"], []).append((r["centro"], r["monto"]))
 
         for m in filas_mov:
             monto_mov = m["monto"] or 0
@@ -1788,7 +1920,8 @@ def detalle_documentos(conn: sqlite3.Connection, desde: str, hasta: str, linea: 
                 ref_total = sum(g.values())
                 detalle = _prorratear(list(g.items()), ref_total, monto_mov) if ref_total else [("", monto_mov)]
             else:
-                detalle = [((m["centro_manual"] or ""), monto_mov)]
+                dmov = distrib_mov.get(m["mov_id"])
+                detalle = dmov if dmov else [((m["centro_manual"] or ""), monto_mov)]
 
             monto = sum(v for c, v in detalle if _matches_filtro(c, linea, categoria, cats, excluir))
             if not monto:

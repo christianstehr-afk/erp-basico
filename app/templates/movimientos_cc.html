@@ -24,8 +24,10 @@
   </style>
 </head>
 {% macro sel_centros(grupos, flujo_val, seleccionado) -%}
-  <!-- Un select por flujo; el JS (wireCentro) muestra/habilita solo el que
-       calza con el Tipo elegido. El deshabilitado no se envía. -->
+  <!-- Un select por flujo; el JS (aplicarSimple, al final del body) muestra
+       y habilita solo el que calza con el Tipo elegido (y ninguno si el
+       formulario está en modo "Distribuir en varios centros"). El
+       deshabilitado no se envía. -->
   <select name="centro" class="sel-centro mcc-input" data-flujo="{{ flujo_val }}" style="font-size:12px;min-width:200px">
     <option value="">— Sin imputar —</option>
     {% for g in grupos %}
@@ -91,8 +93,23 @@
         </div>
         <div>
           <label class="mcc-label">Centro</label>
-          {{ sel_centros(centros_ingreso, 'Ingreso', '') }}
-          {{ sel_centros(centros_gasto, 'Egreso', '') }}
+          <div class="centro-dist-wrap">
+            <div class="centro-simple" style="display:flex;gap:8px;flex-wrap:wrap">
+              {{ sel_centros(centros_ingreso, 'Ingreso', '') }}
+              {{ sel_centros(centros_gasto, 'Egreso', '') }}
+            </div>
+            <button type="button" class="mcc-link-btn btn-toggle-dist" style="margin-top:8px">Distribuir en varios centros</button>
+            <div class="bloque-dist" style="display:none;margin-top:12px;border-top:1px solid #161616;padding-top:12px;min-width:340px">
+              <div class="filas-dist" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button type="button" class="mcc-link-btn btn-agregar-fila">+ Agregar fila</button>
+                <button type="button" class="mcc-link-btn btn-completar-saldo">Completar saldo</button>
+                <button type="button" class="mcc-link-btn btn-cerrar-dist">Volver a centro único</button>
+              </div>
+              <div class="suma-dist" style="font-family:var(--mono);font-size:12px;margin-top:8px"></div>
+            </div>
+            <script type="application/json" class="dist-inicial">[]</script>
+          </div>
         </div>
         <div>
           <label class="mcc-label">Monto</label>
@@ -199,6 +216,7 @@
             </td>
           </tr>
           {% if manual %}
+          {% set dist_m = distribuciones.get(m['id']) or [] %}
           <tr class="mcc-edit-row" id="edit-{{ m['id'] }}">
             <td colspan="7" style="padding:14px;background:#0c0c0c;border-top:1px solid #161616">
               <form method="post" action="/movimientos/{{ m['id'] }}/editar"
@@ -222,8 +240,23 @@
                 </div>
                 <div>
                   <label class="mcc-label">Centro</label>
-                  {{ sel_centros(centros_ingreso, 'Ingreso', m['centro_costo'] or '') }}
-                  {{ sel_centros(centros_gasto, 'Egreso', m['centro_costo'] or '') }}
+                  <div class="centro-dist-wrap">
+                    <div class="centro-simple" style="display:flex;gap:8px;flex-wrap:wrap">
+                      {{ sel_centros(centros_ingreso, 'Ingreso', m['centro_costo'] or '') }}
+                      {{ sel_centros(centros_gasto, 'Egreso', m['centro_costo'] or '') }}
+                    </div>
+                    <button type="button" class="mcc-link-btn btn-toggle-dist" style="margin-top:8px">Distribuir en varios centros</button>
+                    <div class="bloque-dist" style="display:none;margin-top:12px;border-top:1px solid #161616;padding-top:12px;min-width:340px">
+                      <div class="filas-dist" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
+                      <div style="display:flex;gap:8px;flex-wrap:wrap">
+                        <button type="button" class="mcc-link-btn btn-agregar-fila">+ Agregar fila</button>
+                        <button type="button" class="mcc-link-btn btn-completar-saldo">Completar saldo</button>
+                        <button type="button" class="mcc-link-btn btn-cerrar-dist">Volver a centro único</button>
+                      </div>
+                      <div class="suma-dist" style="font-family:var(--mono);font-size:12px;margin-top:8px"></div>
+                    </div>
+                    <script type="application/json" class="dist-inicial">[{% for d in dist_m %}{"centro":"{{ d['centro'] }}","monto":{{ d['monto'] }}}{% if not loop.last %},{% endif %}{% endfor %}]</script>
+                  </div>
                 </div>
                 <div>
                   <label class="mcc-label">Monto</label>
@@ -252,24 +285,177 @@
       if (row) row.classList.toggle('on');
     }
 
-    // Muestra solo el select de centros que calza con el Tipo (Ingreso/Egreso)
-    // elegido en cada formulario; el otro queda oculto y deshabilitado (y por
-    // ende no se envía). Aplica al form de agregar y a cada form de edición.
+    // Catálogo de centros por Tipo (Ingreso/Egreso), en HTML de <option> ya
+    // armado: lo usa cada fila de distribución para ofrecer el catálogo que
+    // corresponde al Tipo elegido en su formulario (igual criterio que los
+    // selects simples de abajo).
+    var CENTROS_HTML = {
+      Ingreso: '<option value="">— Centro —</option>{% for g in centros_ingreso %}<optgroup label="{{ g.nombre }} ({{ g.codigo }})">{% for cod, nom in g.opciones %}<option value="{{ cod }}">{{ cod }} · {{ nom }}</option>{% endfor %}</optgroup>{% endfor %}',
+      Egreso: '<option value="">— Centro —</option>{% for g in centros_gasto %}<optgroup label="{{ g.nombre }} ({{ g.codigo }})">{% for cod, nom in g.opciones %}<option value="{{ cod }}">{{ cod }} · {{ nom }}</option>{% endfor %}</optgroup>{% endfor %}'
+    };
+
+    // Centro de cada formulario (el de agregar y el de edición de cada fila
+    // manual): un select simple según el Tipo elegido, o distribuido en 2+
+    // centros (mismo patrón que la distribución de facturas en pago a
+    // proveedores/ingresos: filas centro + %/$, conversión automática entre
+    // ambos, "Completar saldo" y verificación en vivo de que la suma calce
+    // con el monto del movimiento). La diferencia con facturas es que acá el
+    // "total" no es fijo: es el valor en vivo del campo Monto del mismo
+    // formulario.
     (function () {
-      document.querySelectorAll("form").forEach(function (form) {
-        var flujo = form.querySelector('select[name="flujo"]');
-        var sels = form.querySelectorAll("select.sel-centro");
-        if (!flujo || !sels.length) return;
-        function aplicar() {
-          sels.forEach(function (s) {
-            var visible = s.getAttribute("data-flujo") === flujo.value;
+      function fmt(n) { return "$" + Math.round(n || 0).toLocaleString("es-CL"); }
+
+      function wireForm(form) {
+        var wrap = form.querySelector(".centro-dist-wrap");
+        if (!wrap) return;
+        var montoInput = form.querySelector('input[name="monto"]');
+        var flujoSelect = form.querySelector('select[name="flujo"]');
+        var simple = wrap.querySelector(".centro-simple");
+        var btnToggle = wrap.querySelector(".btn-toggle-dist");
+        var bloque = wrap.querySelector(".bloque-dist");
+        var filasCont = wrap.querySelector(".filas-dist");
+        var sumaEl = wrap.querySelector(".suma-dist");
+        var btnAgregar = wrap.querySelector(".btn-agregar-fila");
+        var btnCompletar = wrap.querySelector(".btn-completar-saldo");
+        var btnCerrar = wrap.querySelector(".btn-cerrar-dist");
+        var submitBtn = form.querySelector('button[type="submit"]');
+        var inicialEl = wrap.querySelector(".dist-inicial");
+        var inicial = [];
+        try { inicial = JSON.parse((inicialEl && inicialEl.textContent) || "[]"); } catch (e) { inicial = []; }
+
+        function total() { return parseFloat((montoInput && montoInput.value) || "0") || 0; }
+        function centrosHtmlActual() {
+          var f = (flujoSelect && flujoSelect.value) || "Egreso";
+          return CENTROS_HTML[f] || CENTROS_HTML.Egreso;
+        }
+
+        function aplicarSimple() {
+          var distribuyendo = bloque.style.display !== "none";
+          simple.querySelectorAll("select.sel-centro").forEach(function (s) {
+            var visible = !distribuyendo && s.getAttribute("data-flujo") === ((flujoSelect && flujoSelect.value) || "");
             s.disabled = !visible;
             s.style.display = visible ? "" : "none";
           });
         }
-        flujo.addEventListener("change", aplicar);
-        aplicar();
-      });
+
+        function fila(centroVal, montoVal) {
+          var div = document.createElement("div");
+          div.style.display = "flex";
+          div.style.gap = "8px";
+          div.style.alignItems = "center";
+          div.style.flexWrap = "wrap";
+          div.innerHTML =
+            '<select name="centro_dist" class="fd-centro mcc-input" style="font-size:12px;min-width:200px">' + centrosHtmlActual() + '</select>' +
+            '<input type="number" class="fd-pct mcc-input" min="0" max="100" step="1" placeholder="%" style="width:64px;text-align:right">' +
+            '<span style="color:var(--slate);font-size:12px">% =</span>' +
+            '<input type="number" name="monto_dist" class="fd-monto mcc-input" min="0" step="1" placeholder="0" style="width:120px;text-align:right">' +
+            '<button type="button" class="fd-quitar mcc-link-btn" title="Quitar fila">×</button>';
+          var selCentro = div.querySelector(".fd-centro");
+          if (centroVal) selCentro.value = centroVal;
+          var pct = div.querySelector(".fd-pct");
+          var montoI = div.querySelector(".fd-monto");
+          if (montoVal !== undefined && montoVal !== null) {
+            montoI.value = montoVal;
+            var t = total();
+            pct.value = t > 0 ? Math.round(montoVal / t * 100) : "";
+          }
+          pct.addEventListener("input", function () {
+            if (pct.value === "") return;
+            montoI.value = Math.round(total() * (parseFloat(pct.value) || 0) / 100);
+            recalcular();
+          });
+          montoI.addEventListener("input", function () {
+            var t = total();
+            if (montoI.value !== "" && t > 0) {
+              pct.value = Math.round((parseFloat(montoI.value) || 0) / t * 100);
+            }
+            recalcular();
+          });
+          div.querySelector(".fd-quitar").addEventListener("click", function () {
+            if (filasCont.children.length > 2) { div.remove(); recalcular(); }
+          });
+          return div;
+        }
+
+        function recalcular() {
+          var suma = 0;
+          filasCont.querySelectorAll(".fd-monto").forEach(function (i) { suma += parseFloat(i.value) || 0; });
+          var t = total();
+          var activo = bloque.style.display !== "none";
+          if (sumaEl) {
+            var ok = suma === t && t > 0;
+            sumaEl.style.color = ok ? "var(--green)" : "#c0392b";
+            sumaEl.textContent = "Suma: " + fmt(suma) + " de " + fmt(t) + (ok ? " ✓" : "");
+          }
+          if (submitBtn) submitBtn.disabled = activo && !(suma === t && t > 0);
+        }
+
+        function actualizarCentrosSelects() {
+          filasCont.querySelectorAll(".fd-centro").forEach(function (sel) {
+            var val = sel.value;
+            sel.innerHTML = centrosHtmlActual();
+            sel.value = val; // si ya no existe en el nuevo catálogo, cae en "— Centro —"
+          });
+        }
+
+        function activarDistribucion() {
+          bloque.style.display = "block";
+          btnToggle.style.display = "none";
+          aplicarSimple();
+          recalcular();
+        }
+        function desactivarDistribucion() {
+          bloque.style.display = "none";
+          btnToggle.style.display = "";
+          filasCont.innerHTML = "";
+          filasCont.appendChild(fila());
+          filasCont.appendChild(fila());
+          aplicarSimple();
+          if (submitBtn) submitBtn.disabled = false;
+        }
+
+        btnToggle.addEventListener("click", activarDistribucion);
+        btnCerrar.addEventListener("click", desactivarDistribucion);
+        btnAgregar.addEventListener("click", function () { filasCont.appendChild(fila()); recalcular(); });
+        btnCompletar.addEventListener("click", function () {
+          var filas = Array.prototype.slice.call(filasCont.children);
+          if (!filas.length) return;
+          var ultima = filas[filas.length - 1];
+          var suma = 0;
+          filas.forEach(function (f) {
+            if (f === ultima) return;
+            suma += parseFloat((f.querySelector(".fd-monto") || {}).value) || 0;
+          });
+          var t = total();
+          var saldo = Math.max(t - suma, 0);
+          var montoUlt = ultima.querySelector(".fd-monto");
+          var pctUlt = ultima.querySelector(".fd-pct");
+          montoUlt.value = saldo;
+          pctUlt.value = t > 0 ? Math.round(saldo / t * 100) : 0;
+          recalcular();
+        });
+        if (montoInput) montoInput.addEventListener("input", recalcular);
+        if (flujoSelect) {
+          flujoSelect.addEventListener("change", function () {
+            aplicarSimple();
+            actualizarCentrosSelects();
+          });
+        }
+
+        // Precarga: si el movimiento ya viene distribuido en 2+ centros
+        // (editar uno que se guardó así), abre el bloque directamente con
+        // esas filas ya cargadas; si no, arranca en modo simple.
+        if (inicial.length >= 2) {
+          inicial.forEach(function (d) { filasCont.appendChild(fila(d.centro, d.monto)); });
+          activarDistribucion();
+        } else {
+          filasCont.appendChild(fila());
+          filasCont.appendChild(fila());
+          aplicarSimple();
+        }
+      }
+
+      document.querySelectorAll("form").forEach(wireForm);
     })();
   </script>
 

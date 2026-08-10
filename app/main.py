@@ -1792,6 +1792,24 @@ def _rango_movimientos(desde: str | None, hasta: str | None) -> tuple[str, str]:
     return d, h
 
 
+def _parsear_filas_distribucion(centro: list[str], monto: list[str]) -> list[dict]:
+    """Empareja por posición los centro[]/monto[] del bloque "Distribuir en
+    varios centros" (misma convención que _guardar_distribucion, ver pago a
+    proveedores): fila i del formulario -> centro[i], monto[i]. Descarta
+    filas vacías, sin centro o con monto <= 0."""
+    filas = []
+    for i in range(max(len(centro), len(monto))):
+        c = (centro[i] if i < len(centro) else "").strip().upper()
+        m = monto[i] if i < len(monto) else "0"
+        try:
+            m_int = int(float(m))
+        except (ValueError, TypeError):
+            m_int = 0
+        if c and m_int > 0:
+            filas.append({"centro": c, "monto": m_int})
+    return filas
+
+
 @app.get("/movimientos", response_class=HTMLResponse)
 def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
                       error: str = ""):
@@ -1802,6 +1820,11 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
     conn = db.get_conn()
     try:
         movs = db.movimientos_cc_en_rango(conn, d, h)
+        # Distribución (2+ centros) de los movimientos manuales del rango, para
+        # poder editarla en el mismo form de edición (ver "Distribuir en varios
+        # centros" en la plantilla). Vacía para los que no están distribuidos.
+        ids_manual = [m["id"] for m in movs if m["origen"] == "manual"]
+        distribuciones = db.distribuciones_de_movimientos(conn, ids_manual)
     finally:
         conn.close()
     # Orden por defecto en esta pantalla: fecha descendente (lo más reciente
@@ -1821,6 +1844,7 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
             # al flujo elegido (Ingreso -> ingresos, Egreso -> gastos).
             "centros_ingreso": centros.grupos("ingreso"),
             "centros_gasto": centros.grupos("gasto"),
+            "distribuciones": distribuciones,
         },
     )
 
@@ -1848,7 +1872,9 @@ def movimientos_pdf(request: Request, desde: str = "", hasta: str = ""):
 @app.post("/movimientos/agregar")
 def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = Form(...),
                         descripcion: str = Form(...), monto: str = Form(...),
-                        centro: str = Form(""), desde: str = Form(""), hasta: str = Form("")):
+                        centro: str = Form(""),
+                        centro_dist: list[str] = Form([]), monto_dist: list[str] = Form([]),
+                        desde: str = Form(""), hasta: str = Form("")):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
@@ -1879,18 +1905,44 @@ def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = F
     if f_mov > date.today():
         return _error("No se permiten fechas futuras.")
 
-    centro = (centro or "").strip().upper()
-    if centro and not centros.es_valido(centro, "ingreso" if flujo == "Ingreso" else "gasto"):
-        return _error("Centro de costo inválido para ese tipo de movimiento.")
+    # Centro: un solo centro (form simple), o distribuido en 2+ (mismo patrón
+    # que la distribución de facturas en pago a proveedores/ingresos, ver
+    # _guardar_distribucion). Si llegan 2+ filas válidas, manda la
+    # distribución y se ignora el select simple.
+    flujo_cat = "ingreso" if flujo == "Ingreso" else "gasto"
+    filas_dist = _parsear_filas_distribucion(centro_dist, monto_dist)
+    distribuir = len(filas_dist) >= 2
+
+    if distribuir:
+        invalidos = [f["centro"] for f in filas_dist if not centros.es_valido(f["centro"], flujo_cat)]
+        if invalidos:
+            return _error(f"Centro inválido: {invalidos[0]}.")
+        if sum(f["monto"] for f in filas_dist) != monto_int:
+            return _error("La suma de los centros debe ser igual al monto del movimiento.")
+        centro = ""
+    else:
+        centro = (centro or "").strip().upper()
+        if centro and not centros.es_valido(centro, flujo_cat):
+            return _error("Centro de costo inválido para ese tipo de movimiento.")
 
     conn = db.get_conn()
+    error = None
     try:
-        db.agregar_movimiento_manual(conn, fecha, flujo, descripcion, monto_int, centro=centro)
-        conn.commit()
+        mid = db.agregar_movimiento_manual(conn, fecha, flujo, descripcion, monto_int, centro=centro)
+        if distribuir:
+            error = db.set_distribucion_movimiento(conn, mid, monto_int, filas_dist)
+        if error:
+            conn.rollback()
+        else:
+            conn.commit()
     finally:
         conn.close()
+    if error:
+        return _error(error)
+    resumen = (", ".join(f"{f['centro']} ${f['monto']}" for f in filas_dist)
+               if distribuir else centro)
     _log_evento(request, f"Movimiento CC agregado (manual) · {flujo} ${monto_int} el {fecha} · {descripcion}"
-                         + (f" · {centro}" if centro else ""))
+                         + (f" · {resumen}" if resumen else ""))
     return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
 
 
@@ -1898,6 +1950,7 @@ def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = F
 def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
                        flujo: str = Form(...), descripcion: str = Form(...),
                        monto: str = Form(...), centro: str = Form(""),
+                       centro_dist: list[str] = Form([]), monto_dist: list[str] = Form([]),
                        desde: str = Form(""), hasta: str = Form("")):
     client = _guard(request)
     if not client:
@@ -1929,20 +1982,46 @@ def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
     if f_mov > date.today():
         return _error("No se permiten fechas futuras.")
 
-    centro = (centro or "").strip().upper()
-    if centro and not centros.es_valido(centro, "ingreso" if flujo == "Ingreso" else "gasto"):
-        return _error("Centro de costo inválido para ese tipo de movimiento.")
+    # Igual que en /movimientos/agregar: centro único, o distribuido en 2+
+    # (ver _guardar_distribucion para facturas). Guardar un centro único
+    # siempre borra una distribución previa (ver editar_movimiento_manual).
+    flujo_cat = "ingreso" if flujo == "Ingreso" else "gasto"
+    filas_dist = _parsear_filas_distribucion(centro_dist, monto_dist)
+    distribuir = len(filas_dist) >= 2
+
+    if distribuir:
+        invalidos = [f["centro"] for f in filas_dist if not centros.es_valido(f["centro"], flujo_cat)]
+        if invalidos:
+            return _error(f"Centro inválido: {invalidos[0]}.")
+        if sum(f["monto"] for f in filas_dist) != monto_int:
+            return _error("La suma de los centros debe ser igual al monto del movimiento.")
+        centro = ""
+    else:
+        centro = (centro or "").strip().upper()
+        if centro and not centros.es_valido(centro, flujo_cat):
+            return _error("Centro de costo inválido para ese tipo de movimiento.")
 
     conn = db.get_conn()
+    error = None
     try:
         ok = db.editar_movimiento_manual(conn, mid, fecha, flujo, descripcion, monto_int,
                                          centro=centro)
-        conn.commit()
+        if ok and distribuir:
+            error = db.set_distribucion_movimiento(conn, mid, monto_int, filas_dist)
+        if error:
+            conn.rollback()
+        else:
+            conn.commit()
     finally:
         conn.close()
     if not ok:
         return _error("Ese movimiento no se puede editar acá (no es manual).")
-    _log_evento(request, f"Movimiento CC editado (manual) id {mid} · {flujo} ${monto_int} el {fecha}")
+    if error:
+        return _error(error)
+    resumen = (", ".join(f"{f['centro']} ${f['monto']}" for f in filas_dist)
+               if distribuir else centro)
+    _log_evento(request, f"Movimiento CC editado (manual) id {mid} · {flujo} ${monto_int} el {fecha}"
+                         + (f" · {resumen}" if resumen else ""))
     return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
 
 
