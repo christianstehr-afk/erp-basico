@@ -291,8 +291,10 @@ def _precargar_pdfs(client: SIIClient, client_bhe: SIIClient | None) -> None:
     · Boletas (BHE-*) requieren la sesión "empresa": si no vino client_bhe o
       la boleta no trae su código de barras (pdf_href_bhe), quedan como
       fallidas para reintentar en el próximo sync. BTE (BTE-*) usan la misma
-      sesión "empresa", pero su PDF todavía no se puede bajar (endpoint sin
-      confirmar, ver sii_bte.py): quedan fallidas hasta que eso se resuelva.
+      sesión "empresa" y su propio código guardado (pdf_href_bte) — pero el
+      SII etiqueta ese link "formato html", no PDF (ver sii_bte.py), así que
+      lo más probable es que también queden como fallidas hasta que se
+      confirme o se resuelva de otra forma (convertir HTML a PDF, etc.).
     · El progreso real (pdf_hechos/pdf_total) se publica en estado_sync y el
       dashboard lo pinta como barra con porcentaje.
     """
@@ -313,12 +315,12 @@ def _precargar_pdfs(client: SIIClient, client_bhe: SIIClient | None) -> None:
                     if client_bhe is not None and f["pdf_href_bhe"]:
                         data = sii_bhe.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bhe"])
                 elif codigo.startswith("BTE-"):
-                    # obtener_pdf_bytes de sii_bte.py todavía no está
-                    # implementado (endpoint sin confirmar, ver ese módulo):
-                    # esto queda pendiente de reintento hasta que se
-                    # confirme, sin bloquear el resto de la precarga.
-                    if client_bhe is not None:
-                        data = sii_bte.obtener_pdf_bytes(client_bhe.session, f["folio"], f["rut_contraparte"])
+                    # El link "Ver boleta" del SII está etiquetado "formato
+                    # html" (ver sii_bte.py), así que lo más probable es que
+                    # esto no traiga un PDF real y quede pendiente de
+                    # reintento — pero se intenta igual por si acaso.
+                    if client_bhe is not None and f["pdf_href_bte"]:
+                        data = sii_bte.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bte"])
                 else:
                     fuente = "recibidos" if f["tipo"] == "compra" else "emitidos"
                     data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)

@@ -500,19 +500,23 @@ def upsert_bte(conn: sqlite3.Connection, doc: dict) -> None:
     (tipo='compra'), igual que las boletas de honorarios (ver upsert_boleta
     arriba) — pedido de Christian, 2026-08-13.
 
-    `doc` esperado (de sii_bte.parse_lista): folio, rut_contraparte,
-    razon_social, fecha, valor_total, impuesto_retenido, estado.
+    `doc` esperado (de sii_bte.parse_mes): folio, rut_contraparte,
+    razon_social, fecha, monto_pagado, honorario_bruto, impuesto_retenido,
+    estado, ver_href.
 
-    El monto que se guarda como `total` es `valor_total` tal cual viene del
-    SII: es lo único que E-Auto le paga al tercero (el impuesto retenido NO
-    se le paga a él, se declara al SII aparte — confirmado por Christian).
-    `impuesto_retenido` no se persiste (mismo criterio que honorariosliquidos
-    en BHE: solo se guarda lo que de verdad hay que pagar/trackear).
+    El monto que se guarda como `total` es `monto_pagado` (columna "Pagado"
+    del SII: bruto menos retención) — es lo único que E-Auto le paga al
+    tercero, el impuesto retenido NO se le paga a él, se declara al SII
+    aparte (confirmado por Christian, y por la columna real del SII).
+    `honorario_bruto`/`impuesto_retenido` no se persisten (mismo criterio
+    que honorariosliquidos en BHE: solo se guarda lo que de verdad hay que
+    pagar/trackear). `ver_href` es el código del link "Ver boleta" (ver
+    sii_bte.py) — se guarda en pdf_href_bte, igual que pdf_href_bhe para BHE.
 
     codigo_sii se arma acá como "BTE-<rut_contraparte>-<folio>" (a diferencia
-    de BHE, esta fuente no trae un código de barras único) y es el que
-    identifica el registro (ON CONFLICT(codigo_sii)). No se toca tipo_dte:
-    las BTE no son DTE, no tienen ese código.
+    de BHE, esta fuente no trae un código de barras único aparte del folio) y
+    es el que identifica el registro (ON CONFLICT(codigo_sii)). No se toca
+    tipo_dte: las BTE no son DTE, no tienen ese código.
     """
     codigo = f"BTE-{doc.get('rut_contraparte')}-{doc.get('folio')}"
     params = {
@@ -521,27 +525,29 @@ def upsert_bte(conn: sqlite3.Connection, doc: dict) -> None:
         "rut_contraparte": doc.get("rut_contraparte"),
         "razon_social": doc.get("razon_social"),
         "fecha": doc.get("fecha"),
-        "monto": doc.get("valor_total", 0),
+        "monto": doc.get("monto_pagado", 0),
         "estado": doc.get("estado") or "Vigente",
+        "ver_href": doc.get("ver_href"),
     }
     conn.execute(
         """
         INSERT INTO facturas
             (tipo, codigo_sii, tipo_dte, documento, folio,
              rut_contraparte, razon_social, fecha_emision, total, estado,
-             fecha_pago_tope)
+             fecha_pago_tope, pdf_href_bte)
         VALUES
             ('compra', :codigo, NULL,
              'Boleta de prestación de servicios de terceros electrónica', :folio,
              :rut_contraparte, :razon_social, :fecha, :monto, :estado,
-             :fecha)
+             :fecha, :ver_href)
         ON CONFLICT(codigo_sii) DO UPDATE SET
             estado          = excluded.estado,
             total           = excluded.total,
             rut_contraparte = excluded.rut_contraparte,
             razon_social    = excluded.razon_social,
             folio           = excluded.folio,
-            fecha_emision   = excluded.fecha_emision
+            fecha_emision   = excluded.fecha_emision,
+            pdf_href_bte    = excluded.pdf_href_bte
         """,
         params,
     )
@@ -580,13 +586,11 @@ def facturas_para_precarga_pdf(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     pdf_path a propósito: aunque la BD diga que hay copia, el archivo puede
     no existir en este disco (p. ej. una BD migrada de otra máquina) y en ese
     caso hay que volver a bajarlo — el chequeo real es contra el disco, en
-    el sync. folio/rut_contraparte se incluyen para las BTE (su PDF se pide
-    por esos datos, no por un href guardado, ver sii_bte.py). Más recientes
-    primero: son los PDF que más probablemente se van a abrir.
+    el sync. Más recientes primero: son los PDF que más probablemente se
+    van a abrir.
     """
     return conn.execute(
-        "SELECT codigo_sii, tipo, fecha_emision, pdf_path, pdf_href_bhe, pdf_href_bte, "
-        "folio, rut_contraparte "
+        "SELECT codigo_sii, tipo, fecha_emision, pdf_path, pdf_href_bhe, pdf_href_bte "
         "FROM facturas WHERE codigo_sii IS NOT NULL AND codigo_sii != '' "
         "ORDER BY fecha_emision DESC"
     ).fetchall()

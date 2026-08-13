@@ -427,20 +427,18 @@ def debug_bhe_inspeccionar(request: Request, anio: int = ANIO, url: str = ""):
 
 
 @app.get("/debug/bte/inspeccionar", response_class=PlainTextResponse)
-def debug_bte_inspeccionar(request: Request, anio: int = ANIO, url: str = ""):
+def debug_bte_inspeccionar(request: Request, anio: int = ANIO, mes: int = 0, url: str = ""):
     """Herramienta temporal de diagnóstico (mismo propósito y mecanismo que
-    /debug/bhe/inspeccionar arriba, ver también sii_bte.py): usa la sesión
-    empresa real (ya logueada) para volcar los links/tablas/formularios de
-    la página de BTE emitidas del SII, sin necesitar credenciales ni acceso
-    directo al SII para terminar de ajustar sii_bte.py — sus URLs y
-    parámetros todavía no están confirmados contra el SII real (ver
+    /debug/bhe/inspeccionar arriba): usa la sesión empresa real (ya
+    logueada) para volcar los links/tablas/formularios de la página de BTE
+    emitidas del SII — útil si en algún mes el parseo de sii_bte.py no
+    reconoce algo (su flujo base ya está confirmado contra el SII real, ver
     docstring de ese módulo).
 
-    Sin `url`: consulta la página de resultados con los parámetros que
-    sii_bte.py intenta hoy (mejor estimación, no confirmada).
+    Sin `url`: consulta el detalle mensual (mismo endpoint y parámetros que
+    usa el sync) del mes/año pedidos — `mes` por defecto es el mes actual.
     Con `url`: consulta esa URL tal cual (para inspeccionar, p. ej., el link
-    a un formulario o paso intermedio que haya aparecido en el volcado
-    anterior).
+    "Ver boleta" de una fila puntual).
     """
     client = _guard(request)
     if not client:
@@ -451,13 +449,15 @@ def debug_bte_inspeccionar(request: Request, anio: int = ANIO, url: str = ""):
             "No hay sesión empresa activa. Cerrá sesión y volvé a entrar con "
             "el usuario y clave empresa.", status_code=401,
         )
-    from .sii_client import normalizar_rut
     if url:
         target, params = url, {}
     else:
-        numero, dv = normalizar_rut(client_bhe.rut)
         target = sii_bte.CONSULTA_URL
-        params = {"rut_arrastre": numero, "dv_arrastre": dv, "anio": anio}
+        mes_pedido = mes or date.today().month
+        params = {
+            "DIA": "1", "MESM": f"{mes_pedido:02d}", "ANOM": anio,
+            "TIPO": "mensual", "AUTEN": "RUTCLAVE", "CNTR": "1", "PAGINA": "1",
+        }
     texto = sii_bte.diagnostico(client_bhe.session, target, params)
     return PlainTextResponse(texto)
 
@@ -680,16 +680,23 @@ def pdf_ver(request: Request, codigo: str):
         _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
         return Response(content=data, media_type="application/pdf")
 
-    # BTE: mismo criterio que boletas de honorarios (sesión "empresa"), pero
-    # el endpoint del PDF todavía no está confirmado contra el SII real (ver
-    # sii_bte.py) — por ahora siempre devuelve None, así que se avisa en vez
-    # de caer al camino de facturas normales (que fallaría igual, pero con
-    # un mensaje confuso).
+    # BTE: mismo criterio que boletas de honorarios (sesión "empresa"), con
+    # el código guardado al sincronizar (pdf_href_bte). El SII etiqueta ese
+    # link "formato html", no PDF (ver sii_bte.py) — se intenta igual por si
+    # acaso, y si no resulta en un PDF real se avisa en vez de caer al
+    # camino de facturas normales (que fallaría igual, con un mensaje
+    # confuso).
     if codigo.startswith("BTE-"):
+        client_bhe = _current_client_bhe(request)
+        if client_bhe and row["pdf_href_bte"]:
+            data = sii_bte.obtener_pdf_bytes(client_bhe.session, row["pdf_href_bte"])
+            if data:
+                _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
+                return Response(content=data, media_type="application/pdf")
         return Response(
             "El PDF de esta BTE todavía no se puede descargar automáticamente "
-            "(pendiente de confirmar el endpoint del SII, ver sii_bte.py). "
-            "Se puede descargar a mano desde el SII mientras tanto.",
+            "(el SII la muestra en formato html, no como PDF — ver sii_bte.py). "
+            "Se puede ver a mano desde el SII mientras tanto.",
             status_code=501,
         )
 
@@ -745,10 +752,19 @@ def pdf_descargar(request: Request, codigo: str):
         )
 
     if codigo.startswith("BTE-"):
+        client_bhe = _current_client_bhe(request)
+        if client_bhe and row["pdf_href_bte"]:
+            data = sii_bte.obtener_pdf_bytes(client_bhe.session, row["pdf_href_bte"])
+            if data:
+                _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
+                return Response(
+                    content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{_nombre_pdf(row)}"'},
+                )
         return Response(
             "El PDF de esta BTE todavía no se puede descargar automáticamente "
-            "(pendiente de confirmar el endpoint del SII, ver sii_bte.py). "
-            "Se puede descargar a mano desde el SII mientras tanto.",
+            "(el SII la muestra en formato html, no como PDF — ver sii_bte.py). "
+            "Se puede ver a mano desde el SII mientras tanto.",
             status_code=501,
         )
 
@@ -992,13 +1008,13 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
                 except sii_bhe.BHEError:
                     factura_bytes = None
         elif codigo.startswith("BTE-"):
-            # Igual que arriba: el endpoint del PDF de una BTE aún no está
-            # confirmado (ver sii_bte.py), así que esto siempre da None por
-            # ahora. El PDF de gestión se arma igual, solo sin el original
-            # adjunto (ver incluye_original más abajo).
+            # El SII etiqueta el link "Ver boleta" de una BTE como "formato
+            # html", no PDF (ver sii_bte.py) — lo más probable es que esto
+            # dé None. El PDF de gestión se arma igual, solo sin el
+            # original adjunto (ver incluye_original más abajo).
             client_bhe = _current_client_bhe(request)
             if client_bhe:
-                factura_bytes = sii_bte.obtener_pdf_bytes(client_bhe.session, f["folio"], f["rut_contraparte"])
+                factura_bytes = sii_bte.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bte"])
         else:
             fuente = _FUENTE_POR_TIPO.get(cfg["tipo"])
             if fuente:
