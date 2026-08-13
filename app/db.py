@@ -1486,8 +1486,9 @@ def documentos_vencidos(conn: sqlite3.Connection, tipo: str, hoy: str) -> list[d
     (criterio removido a pedido de Christian, 2026-08-13). `hoy` se
     mantiene en la firma por compatibilidad con los llamadores, pero ya
     no se usa para filtrar.
-    Ordenado por fecha tope ascendente (lo más vencido primero); las que
-    no tienen fecha tope quedan al final.
+    Ordenado por fecha tope descendente (la más reciente primero, orden
+    por defecto del Cockpit desde 2026-08-13); las que no tienen fecha
+    tope quedan al final.
     """
     res: list[dict] = []
     for f in facturas_con_pago(conn, tipo=tipo):
@@ -1507,7 +1508,9 @@ def documentos_vencidos(conn: sqlite3.Connection, tipo: str, hoy: str) -> list[d
             "pendiente": pendiente,
             "pdf_path": f["pdf_path"],
         })
-    res.sort(key=lambda d: (d["fecha_pago_tope"] is None, d["fecha_pago_tope"] or ""))
+    # reverse=True sobre "" (sin tope) ordenado junto a fechas ISO deja las
+    # fechas más recientes primero y las sin tope al final (ver nota arriba).
+    res.sort(key=lambda d: d["fecha_pago_tope"] or "", reverse=True)
     return res
 
 
@@ -1515,7 +1518,8 @@ def rendiciones_pendientes(conn: sqlite3.Connection) -> list[dict]:
     """Rendiciones que no están pagadas al 100%.
 
     Devuelve dicts con id, nombre, fecha y saldo (lo que queda por pagar),
-    ordenados por fecha ascendente.
+    ordenados por fecha descendente (la más reciente primero, orden por
+    defecto del Cockpit desde 2026-08-13).
     """
     res: list[dict] = []
     for r in listar_rendiciones(conn):
@@ -1526,7 +1530,7 @@ def rendiciones_pendientes(conn: sqlite3.Connection) -> list[dict]:
             "id": r["id"], "nombre": r["nombre"],
             "fecha": r["fecha"], "saldo": saldo,
         })
-    res.sort(key=lambda d: d["fecha"] or "")
+    res.sort(key=lambda d: d["fecha"] or "", reverse=True)
     return res
 
 

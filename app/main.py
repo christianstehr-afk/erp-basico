@@ -159,6 +159,11 @@ def index(request: Request, relogin: int = 0, rut: str = ""):
             movimientos_mes = db.movimientos_cc_en_rango(conn, primer_dia_mes, hoy)
         finally:
             conn.close()
+        # movimientos_cc_en_rango() devuelve ascendente (lo necesitan otros
+        # llamadores, ver /movimientos); acá se invierte solo para mostrar,
+        # igual que en movimientos_lista(), para que el Cockpit quede con
+        # todas sus listas en orden de fecha descendente por defecto.
+        movimientos_mes = list(reversed(movimientos_mes))
         total_ing_mes = sum(m["monto"] for m in movimientos_mes if m["flujo"] == "Ingreso")
         total_egr_mes = sum(m["monto"] for m in movimientos_mes if m["flujo"] == "Egreso")
         return templates.TemplateResponse(
