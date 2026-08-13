@@ -374,15 +374,17 @@
             <thead>
               <tr>
                 <th class="sortable" data-col="0" data-type="text">Documento <span class="arrow"></span></th>
-                <th class="sortable" data-col="1" data-type="num">Folio <span class="arrow"></span></th>
-                <th class="sortable" data-col="2" data-type="text">Fecha <span class="arrow"></span></th>
-                <th class="sortable r" data-col="3" data-type="num">Monto <span class="arrow"></span></th>
+                <th class="sortable" data-col="1" data-type="text">RUT <span class="arrow"></span></th>
+                <th class="sortable" data-col="2" data-type="num">Folio <span class="arrow"></span></th>
+                <th class="sortable" data-col="3" data-type="text">Fecha <span class="arrow"></span></th>
+                <th class="sortable r" data-col="4" data-type="num">Monto <span class="arrow"></span></th>
               </tr>
             </thead>
             <tbody>
               {% for d in otras_empresas_docs %}
               <tr>
                 <td>{{ d['documento'] }}</td>
+                <td class="mono">{{ d['empresa_rut_fmt'] }}</td>
                 <td class="mono" data-value="{{ d['folio'] }}">
                   <a class="folio-link" style="color:var(--red)" href="/otras-empresas/pdf/{{ d['empresa_rut'] }}/{{ d['codigo'] }}" target="_blank">{{ d['folio'] }}</a>
                 </td>

@@ -32,8 +32,8 @@ from .sii_client import SIIClient, SIISessionExpirada
 # solo en memoria (otras_empresas_cache, ver abajo) y se vuelven a consultar
 # al SII en cada sync, igual que estado_sync.
 OTRAS_EMPRESAS = [
-    {"rut": "77204094-6", "nombre": "Christian Stehr Servicios SpA"},
-    {"rut": "76178564-8", "nombre": "Christian Stehr Servicios Informáticos EIRL"},
+    {"rut": "77204094-6", "rut_fmt": "77.204.094-6", "nombre": "Christian Stehr Servicios SpA"},
+    {"rut": "76178564-8", "rut_fmt": "76.178.564-8", "nombre": "Christian Stehr Servicios Informáticos EIRL"},
 ]
 
 otras_empresas_cache: dict = {
@@ -334,6 +334,7 @@ def _sincronizar_otras_empresas(
                 docs = [d for d in docs if (d.get("fecha") or "") >= desde]
             for d in docs:
                 d["empresa_rut"] = empresa["rut"]
+                d["empresa_rut_fmt"] = empresa["rut_fmt"]
                 d["empresa_nombre"] = empresa["nombre"]
             documentos.extend(docs)
     except Exception as exc:
