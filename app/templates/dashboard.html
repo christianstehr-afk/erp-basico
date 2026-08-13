@@ -354,6 +354,50 @@
         {% endif %}
       </section>
 
+      <!-- Cuadro 6 · Vigilancia de otras empresas donde Christian es apoderado en
+           el SII (solo informativo: nunca se guarda en BD, se re-consulta al SII
+           en cada sync — ver comentario junto a OTRAS_EMPRESAS en sync.py) -->
+      <section class="cockpit-panel wide">
+        <div class="cockpit-phead">
+          <div class="eyebrow" style="color:var(--red)">Facturas recibidas Christian Stehr Servicios SpA y Christian Stehr Servicios Informáticos EIRL</div>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--slate);white-space:nowrap">
+            {% if otras_empresas_error %}
+              <span style="color:var(--red)">⚠ SII no disponible · mostrando última información</span>
+            {% else %}
+              {{ otras_empresas_docs|length }}{% if otras_empresas_actualizado %} · act. {{ otras_empresas_actualizado }}{% endif %}
+            {% endif %}
+          </span>
+        </div>
+        {% if otras_empresas_docs %}
+        <div class="cockpit-scroll">
+          <table class="cockpit-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-col="0" data-type="text">Documento <span class="arrow"></span></th>
+                <th class="sortable" data-col="1" data-type="num">Folio <span class="arrow"></span></th>
+                <th class="sortable" data-col="2" data-type="text">Fecha <span class="arrow"></span></th>
+                <th class="sortable r" data-col="3" data-type="num">Monto <span class="arrow"></span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for d in otras_empresas_docs %}
+              <tr>
+                <td>{{ d['documento'] }}</td>
+                <td class="mono" data-value="{{ d['folio'] }}">
+                  <a class="folio-link" style="color:var(--red)" href="/otras-empresas/pdf/{{ d['empresa_rut'] }}/{{ d['codigo'] }}" target="_blank">{{ d['folio'] }}</a>
+                </td>
+                <td class="mono" data-value="{{ d['fecha'] or '' }}">{{ d['fecha'] }}</td>
+                <td class="r" data-value="{{ d['monto'] }}">${{ "{:,.0f}".format(d['monto']).replace(",", ".") }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="cockpit-empty">Sin facturas recibidas por estas empresas.</div>
+        {% endif %}
+      </section>
+
     </div>
 
     <!-- Botones al pie -->

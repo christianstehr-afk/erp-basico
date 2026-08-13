@@ -16,9 +16,31 @@ guarda, cache-on-view).
 from __future__ import annotations
 
 import threading
+from datetime import datetime
 
 from . import db, pdf_store, sii_bhe, sii_docs, sii_rcv
 from .sii_client import SIIClient, SIISessionExpirada
+
+# --- Vigilancia de otras empresas (pedido de Christian, 2026-08-13) --------
+#
+# Con su RUT personal, Christian es apoderado en el SII de otras 2 empresas
+# sin movimiento (aparte de E-Auto). El único riesgo real ahí es que alguien
+# les emita una factura sin que él se entere (puede generarle problemas
+# tributarios serios). Por eso, en cada sync se revisan también las facturas
+# RECIBIDAS de esas 2 empresas — pero a propósito NUNCA se guardan en la BD:
+# es solo informativo y no debe "contaminar" el resto del ERP. Se guardan
+# solo en memoria (otras_empresas_cache, ver abajo) y se vuelven a consultar
+# al SII en cada sync, igual que estado_sync.
+OTRAS_EMPRESAS = [
+    {"rut": "77204094-6", "nombre": "Christian Stehr Servicios SpA"},
+    {"rut": "76178564-8", "nombre": "Christian Stehr Servicios Informáticos EIRL"},
+]
+
+otras_empresas_cache: dict = {
+    "documentos": [],     # última lista buena conocida (nunca en BD, ver arriba)
+    "actualizado": None,  # texto "dd-mm-YYYY HH:MM" del último sync que sí pudo actualizarla
+    "error": None,        # si el último intento falló, el motivo (se sigue mostrando la lista anterior)
+}
 
 # Estado simple de sincronización (para mostrar en el panel)
 estado_sync: dict = {
@@ -66,7 +88,8 @@ def _anios_a_sincronizar(anio_hasta: int, desde: str | None) -> list[int]:
 
 
 def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
-                client_bhe: SIIClient | None = None, rut_empresa: str | None = None) -> dict:
+                client_bhe: SIIClient | None = None, rut_empresa: str | None = None,
+                empresa_rut: str | None = None) -> dict:
     """Actualiza la BD con recibidas, emitidas y boletas de honorarios.
 
     Consulta cada año entre el de `desde` (si viene) y `anio` inclusive,
@@ -75,6 +98,12 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
     `client_bhe`/`rut_empresa`: sesión y RUT de la cuenta "empresa", usada
     solo para boletas de honorarios recibidas (ver sii_bhe.py). Si vienen en
     None, simplemente no se sincronizan boletas (no es un error).
+
+    `empresa_rut`: RUT de la empresa principal (E-Auto) que `client` ya tiene
+    seleccionada al llamar esta función. Si viene, al final del sync se
+    revisan también las OTRAS_EMPRESAS (ver _sincronizar_otras_empresas) y se
+    vuelve a dejar esta empresa seleccionada en la sesión. Si viene None, no
+    se revisan las otras empresas (comportamiento anterior).
 
     Devuelve un resumen con cuántos documentos se trajeron de cada tipo.
     """
@@ -200,6 +229,14 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
     # pendiente y se reintenta en el próximo.
     _precargar_pdfs(client, client_bhe)
 
+    # Vigilancia de otras empresas (ver comentario junto a OTRAS_EMPRESAS,
+    # arriba). Va al final a propósito: cambia de empresa activa en la sesión
+    # SII y, aunque siempre la restaura, mejor dejarlo después de todo lo que
+    # sí depende de tener EMPRESA_RUT seleccionada.
+    if empresa_rut:
+        estado_sync["fase"] = "Revisando otras empresas…"
+        _sincronizar_otras_empresas(client, anio, desde, empresa_rut)
+
     estado_sync["fase"] = "Listo"
     estado_sync["corriendo"] = False
 
@@ -268,8 +305,55 @@ def _precargar_pdfs(client: SIIClient, client_bhe: SIIClient | None) -> None:
         conn.close()
 
 
+def _sincronizar_otras_empresas(
+    client: SIIClient, anio: int, desde: str | None, empresa_rut: str
+) -> None:
+    """Revisa las facturas RECIBIDAS de OTRAS_EMPRESAS y actualiza
+    otras_empresas_cache (ver comentario junto a OTRAS_EMPRESAS, arriba).
+
+    Nunca persiste en BD ni hace fallar el resto del sync: cualquier error
+    queda solo en otras_empresas_cache["error"], conservando la última lista
+    buena conocida (mejor mostrar información vieja que borrar todo y que
+    parezca, erróneamente, que no hay nada que revisar).
+
+    Selecciona cada empresa por turno en la MISMA sesión SII (comparte el
+    login personal de Christian, que es apoderado de las tres) y, pase lo que
+    pase, siempre vuelve a dejar seleccionada `empresa_rut` (E-Auto) al
+    final: el resto del ERP asume que la sesión queda apuntando a esa
+    empresa.
+    """
+    anios = _anios_a_sincronizar(anio, desde)
+    documentos: list[dict] = []
+    try:
+        for empresa in OTRAS_EMPRESAS:
+            client.seleccionar_empresa(empresa["rut"])
+            docs: list[dict] = []
+            for a in anios:
+                docs.extend(sii_docs.obtener_documentos(client.session, "recibidos", anio=a))
+            if desde:
+                docs = [d for d in docs if (d.get("fecha") or "") >= desde]
+            for d in docs:
+                d["empresa_rut"] = empresa["rut"]
+                d["empresa_nombre"] = empresa["nombre"]
+            documentos.extend(docs)
+    except Exception as exc:
+        otras_empresas_cache["error"] = str(exc)
+        return
+    finally:
+        try:
+            client.seleccionar_empresa(empresa_rut)
+        except Exception:
+            pass  # si esto falla hay un problema mayor; no lo escondemos acá
+
+    documentos.sort(key=lambda d: (d.get("fecha") or "", d.get("codigo") or ""), reverse=True)
+    otras_empresas_cache["documentos"] = documentos
+    otras_empresas_cache["actualizado"] = datetime.now().strftime("%d-%m-%Y %H:%M")
+    otras_empresas_cache["error"] = None
+
+
 def sincronizar_async(client: SIIClient, anio: int = 2026, desde: str | None = None,
-                      client_bhe: SIIClient | None = None, rut_empresa: str | None = None) -> None:
+                      client_bhe: SIIClient | None = None, rut_empresa: str | None = None,
+                      empresa_rut: str | None = None) -> None:
     """Dispara la sincronización completa en segundo plano.
 
     Marca corriendo=True de inmediato (antes de devolver) para que el panel
@@ -282,7 +366,8 @@ def sincronizar_async(client: SIIClient, anio: int = 2026, desde: str | None = N
 
     def _worker() -> None:
         try:
-            sincronizar(client, anio=anio, desde=desde, client_bhe=client_bhe, rut_empresa=rut_empresa)
+            sincronizar(client, anio=anio, desde=desde, client_bhe=client_bhe,
+                       rut_empresa=rut_empresa, empresa_rut=empresa_rut)
         except SIISessionExpirada:
             pass  # ya quedó reflejado en estado_sync (sesion_perdida=True)
         except Exception as exc:

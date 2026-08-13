@@ -171,6 +171,11 @@ def index(request: Request, relogin: int = 0, rut: str = ""):
                 "rendiciones_pend": rendiciones_pend,
                 "movimientos_mes": movimientos_mes,
                 "total_ing_mes": total_ing_mes, "total_egr_mes": total_egr_mes,
+                # Vigilancia de otras empresas (ver comentario en sync.py junto
+                # a OTRAS_EMPRESAS): solo informativo, nunca en BD.
+                "otras_empresas_docs": sync.otras_empresas_cache["documentos"],
+                "otras_empresas_actualizado": sync.otras_empresas_cache["actualizado"],
+                "otras_empresas_error": sync.otras_empresas_cache["error"],
             },
         )
     return templates.TemplateResponse(
@@ -231,7 +236,8 @@ def login(request: Request, rut: str = Form(...), clave: str = Form(...),
     # cockpit, al cargar, ve `sync.corriendo=True` y muestra su barra de
     # progreso automáticamente mientras la sincronización avanza.
     sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC,
-                           client_bhe=client_bhe, rut_empresa=rut_empresa)
+                           client_bhe=client_bhe, rut_empresa=rut_empresa,
+                           empresa_rut=EMPRESA_RUT)
 
     return RedirectResponse("/", status_code=303)
 
@@ -244,7 +250,8 @@ def sincronizar_ahora(request: Request):
     _log_evento(request, "Sincronización manual con el SII")
     client_bhe = _current_client_bhe(request)
     sync.sincronizar_async(client, anio=ANIO, desde=DESDE_SYNC,
-                           client_bhe=client_bhe, rut_empresa=client_bhe.rut if client_bhe else None)
+                           client_bhe=client_bhe, rut_empresa=client_bhe.rut if client_bhe else None,
+                           empresa_rut=EMPRESA_RUT)
     return JSONResponse({"ok": True})
 
 
@@ -696,6 +703,69 @@ def pdf_descargar(request: Request, codigo: str):
         content=data, media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{_nombre_pdf(row)}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Vigilancia de otras empresas (Cockpit, cuadro inferior) — ver comentario en
+# sync.py junto a OTRAS_EMPRESAS. Estas 2 rutas sirven el PDF de un documento
+# recibido por una de esas empresas, SIN pasar por la BD (no se guarda ahí):
+# el código y el RUT de la empresa vienen del propio link, generado a partir
+# de sync.otras_empresas_cache. Por eso cada ruta valida `empresa_rut` contra
+# la lista blanca OTRAS_EMPRESAS antes de tocar la sesión SII.
+# ---------------------------------------------------------------------------
+
+@app.get("/otras-empresas/pdf/{empresa_rut}/{codigo}", response_class=HTMLResponse)
+def otras_empresas_pdf_viewer(request: Request, empresa_rut: str, codigo: str):
+    client = _current_client(request)
+    if not client or not client.rut:
+        return RedirectResponse("/", status_code=303)
+    empresa = next((e for e in sync.OTRAS_EMPRESAS if e["rut"] == empresa_rut), None)
+    if not empresa:
+        return HTMLResponse("<p>PDF no disponible.</p>", status_code=404)
+    # El detalle (documento/folio) se busca en la última lista sincronizada
+    # (solo para el título del visor); si ya no está ahí (p. ej. otro sync
+    # corrió justo después de abrir el Cockpit), igual se muestra el PDF.
+    doc = next(
+        (d for d in sync.otras_empresas_cache["documentos"]
+         if d.get("codigo") == codigo and d.get("empresa_rut") == empresa_rut),
+        None,
+    )
+    return templates.TemplateResponse(
+        "pdf_viewer.html",
+        {
+            "request": request,
+            "codigo": codigo,
+            "documento": (doc or {}).get("documento") or "Documento",
+            "folio": (doc or {}).get("folio", ""),
+            "razon_social": empresa["nombre"],
+            "rut_contraparte": empresa["rut"],
+            "pdf_src": f"/otras-empresas/pdf/{empresa_rut}/{codigo}/ver",
+        },
+    )
+
+
+@app.get("/otras-empresas/pdf/{empresa_rut}/{codigo}/ver")
+def otras_empresas_pdf_ver(request: Request, empresa_rut: str, codigo: str):
+    client = _current_client(request)
+    if not client or not client.rut:
+        return RedirectResponse("/", status_code=303)
+    empresa = next((e for e in sync.OTRAS_EMPRESAS if e["rut"] == empresa_rut), None)
+    if not empresa:
+        return Response("No autorizado", status_code=404)
+    # Cambia de empresa activa en la sesión SII solo para esta descarga y
+    # SIEMPRE la restaura a E-Auto al terminar (pase lo que pase), igual que
+    # sync._sincronizar_otras_empresas: el resto del ERP asume esa selección.
+    try:
+        client.seleccionar_empresa(empresa_rut)
+        data = sii_docs.obtener_pdf_bytes(client.session, "recibidos", codigo)
+    finally:
+        try:
+            client.seleccionar_empresa(EMPRESA_RUT)
+        except Exception:
+            pass
+    if not data:
+        return Response("No se pudo obtener el PDF del SII. Intenta de nuevo.", status_code=502)
+    return Response(content=data, media_type="application/pdf")
 
 
 # ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@
       </div>
     </div>
 
-    <iframe class="pdf-frame" src="/pdf/{{ codigo }}/ver" title="PDF"></iframe>
+    <iframe class="pdf-frame" src="{{ pdf_src or ('/pdf/' ~ codigo ~ '/ver') }}" title="PDF"></iframe>
   </main>
   <script>
     // window.close() solo funciona si la pestaña la abrió un script; si no
