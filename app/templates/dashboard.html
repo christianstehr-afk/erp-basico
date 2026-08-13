@@ -164,6 +164,13 @@
     </div>
     {% endif %}
 
+    {% if sync and sync.bte_error %}
+    <div style="border:1px solid #4a3a10;background:rgba(230,180,30,.08);color:#e6b41e;padding:12px 14px;border-radius:var(--radius);margin-bottom:20px;font-size:13px">
+      <strong style="font-family:var(--mono);letter-spacing:.06em">BTE (BOLETAS DE TERCEROS)</strong> —
+      {{ sync.bte_error }} El resto de la app funciona normalmente.
+    </div>
+    {% endif %}
+
     <div class="cockpit-grid">
 
       <!-- Cuadro 1 · Facturas rechazadas -->

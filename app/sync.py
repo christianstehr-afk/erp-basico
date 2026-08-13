@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 
-from . import db, pdf_store, sii_bhe, sii_docs, sii_rcv
+from . import db, pdf_store, sii_bhe, sii_bte, sii_docs, sii_rcv
 from .sii_client import SIIClient, SIISessionExpirada
 
 # --- Vigilancia de otras empresas (pedido de Christian, 2026-08-13) --------
@@ -49,6 +49,7 @@ estado_sync: dict = {
     "recibidas": 0,
     "emitidas": 0,
     "boletas": 0,
+    "bte": 0,
     "error": None,
     # Distinto de un error cualquiera: la sesión con el SII se cerró de su
     # lado (típicamente por inactividad) y hay que volver a iniciar sesión
@@ -59,6 +60,10 @@ estado_sync: dict = {
     # Un problema ahí NUNCA bloquea el sync de facturas: se guarda acá y el
     # panel lo muestra como aviso, no como error duro.
     "boletas_error": None,
+    # BTE (Boletas de Prestación de Servicios de Terceros Electrónica, ver
+    # sii_bte.py): misma sesión "empresa" que boletas de honorarios, mismo
+    # criterio de no bloquear el resto del sync.
+    "bte_error": None,
     # Progreso de la precarga de PDFs (el dashboard ya sabe pintar una barra
     # con porcentaje real cuando pdf_total > 0; ver dashboard.html).
     "pdf_total": 0,
@@ -210,6 +215,27 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
             except Exception as exc:
                 estado_sync["boletas_error"] = str(exc)
 
+        # BTE (Boletas de Prestación de Servicios de Terceros Electrónica)
+        # emitidas por E-Auto a terceros: misma sesión "empresa" que las
+        # boletas de honorarios (ver sii_bte.py). Pedido de Christian,
+        # 2026-08-13. Igual que boletas, un fallo acá NUNCA bloquea el resto
+        # del sync: se guarda en estado_sync["bte_error"] y se sigue.
+        estado_sync["bte_error"] = None
+        if client_bhe is not None and rut_empresa:
+            estado_sync["fase"] = "Consultando BTE emitidas…"
+            try:
+                btes = []
+                for a in anios:
+                    btes.extend(sii_bte.obtener_bte_emitidas(
+                        client_bhe.session, rut_empresa, a, desde=desde))
+                if desde:
+                    btes = [b for b in btes if (b.get("fecha") or "") >= desde]
+                for b in btes:
+                    db.upsert_bte(conn, b)
+                conn.commit()
+            except Exception as exc:
+                estado_sync["bte_error"] = str(exc)
+
         estado_sync["recibidas"] = conn.execute(
             "SELECT COUNT(*) FROM facturas WHERE tipo='compra'"
         ).fetchone()[0]
@@ -218,6 +244,9 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         ).fetchone()[0]
         estado_sync["boletas"] = conn.execute(
             "SELECT COUNT(*) FROM facturas WHERE tipo='compra' AND codigo_sii LIKE 'BHE-%'"
+        ).fetchone()[0]
+        estado_sync["bte"] = conn.execute(
+            "SELECT COUNT(*) FROM facturas WHERE tipo='compra' AND codigo_sii LIKE 'BTE-%'"
         ).fetchone()[0]
     finally:
         conn.close()
@@ -246,6 +275,7 @@ def sincronizar(client: SIIClient, anio: int = 2026, desde: str | None = None,
         "total_recibidas": estado_sync["recibidas"],
         "total_emitidas": estado_sync["emitidas"],
         "total_boletas": estado_sync["boletas"],
+        "total_bte": estado_sync["bte"],
     }
 
 
@@ -260,7 +290,9 @@ def _precargar_pdfs(client: SIIClient, client_bhe: SIIClient | None) -> None:
       transacciones cortas no bloquean a un usuario navegando la app.
     · Boletas (BHE-*) requieren la sesión "empresa": si no vino client_bhe o
       la boleta no trae su código de barras (pdf_href_bhe), quedan como
-      fallidas para reintentar en el próximo sync.
+      fallidas para reintentar en el próximo sync. BTE (BTE-*) usan la misma
+      sesión "empresa", pero su PDF todavía no se puede bajar (endpoint sin
+      confirmar, ver sii_bte.py): quedan fallidas hasta que eso se resuelva.
     · El progreso real (pdf_hechos/pdf_total) se publica en estado_sync y el
       dashboard lo pinta como barra con porcentaje.
     """
@@ -280,12 +312,19 @@ def _precargar_pdfs(client: SIIClient, client_bhe: SIIClient | None) -> None:
                 if codigo.startswith("BHE-"):
                     if client_bhe is not None and f["pdf_href_bhe"]:
                         data = sii_bhe.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bhe"])
+                elif codigo.startswith("BTE-"):
+                    # obtener_pdf_bytes de sii_bte.py todavía no está
+                    # implementado (endpoint sin confirmar, ver ese módulo):
+                    # esto queda pendiente de reintento hasta que se
+                    # confirme, sin bloquear el resto de la precarga.
+                    if client_bhe is not None:
+                        data = sii_bte.obtener_pdf_bytes(client_bhe.session, f["folio"], f["rut_contraparte"])
                 else:
                     fuente = "recibidos" if f["tipo"] == "compra" else "emitidos"
                     data = sii_docs.obtener_pdf_bytes(client.session, fuente, codigo)
             except Exception:
-                # BHEError, timeout, etc.: falla puntual de ESTE documento;
-                # nunca aborta la cola ni invalida sesiones.
+                # BHEError, BTEError, timeout, etc.: falla puntual de ESTE
+                # documento; nunca aborta la cola ni invalida sesiones.
                 data = None
             if data and pdf_store.guardar(conn, codigo, f["tipo"], f["fecha_emision"], data):
                 conn.commit()

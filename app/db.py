@@ -321,6 +321,11 @@ def _migrar(conn: sqlite3.Connection) -> None:
         # al momento de verlo (ver sii_bhe.obtener_pdf_bytes). En facturas
         # normales (DTE) esta columna queda NULL.
         "pdf_href_bhe": "TEXT",
+        # Para BTE (codigo_sii que empieza con "BTE-"): sin PDF confirmado
+        # todavía contra el SII real (ver sii_bte.py, sección "estado de
+        # este módulo"); se deja la columna lista para cuando se determine
+        # el endpoint real. En facturas normales y BHE queda NULL.
+        "pdf_href_bte": "TEXT",
         # Centro de costo/ingreso "LINEA-CAT" (ver centros.py).
         "centro_costo": "TEXT",
     }
@@ -489,6 +494,59 @@ def upsert_boleta(conn: sqlite3.Connection, doc: dict) -> None:
     )
 
 
+def upsert_bte(conn: sqlite3.Connection, doc: dict) -> None:
+    """Inserta o actualiza una BTE (Boleta de Prestación de Servicios de
+    Terceros Electrónica) emitida por E-Auto a un tercero, en `facturas`
+    (tipo='compra'), igual que las boletas de honorarios (ver upsert_boleta
+    arriba) — pedido de Christian, 2026-08-13.
+
+    `doc` esperado (de sii_bte.parse_lista): folio, rut_contraparte,
+    razon_social, fecha, valor_total, impuesto_retenido, estado.
+
+    El monto que se guarda como `total` es `valor_total` tal cual viene del
+    SII: es lo único que E-Auto le paga al tercero (el impuesto retenido NO
+    se le paga a él, se declara al SII aparte — confirmado por Christian).
+    `impuesto_retenido` no se persiste (mismo criterio que honorariosliquidos
+    en BHE: solo se guarda lo que de verdad hay que pagar/trackear).
+
+    codigo_sii se arma acá como "BTE-<rut_contraparte>-<folio>" (a diferencia
+    de BHE, esta fuente no trae un código de barras único) y es el que
+    identifica el registro (ON CONFLICT(codigo_sii)). No se toca tipo_dte:
+    las BTE no son DTE, no tienen ese código.
+    """
+    codigo = f"BTE-{doc.get('rut_contraparte')}-{doc.get('folio')}"
+    params = {
+        "codigo": codigo,
+        "folio": doc.get("folio"),
+        "rut_contraparte": doc.get("rut_contraparte"),
+        "razon_social": doc.get("razon_social"),
+        "fecha": doc.get("fecha"),
+        "monto": doc.get("valor_total", 0),
+        "estado": doc.get("estado") or "Vigente",
+    }
+    conn.execute(
+        """
+        INSERT INTO facturas
+            (tipo, codigo_sii, tipo_dte, documento, folio,
+             rut_contraparte, razon_social, fecha_emision, total, estado,
+             fecha_pago_tope)
+        VALUES
+            ('compra', :codigo, NULL,
+             'Boleta de prestación de servicios de terceros electrónica', :folio,
+             :rut_contraparte, :razon_social, :fecha, :monto, :estado,
+             :fecha)
+        ON CONFLICT(codigo_sii) DO UPDATE SET
+            estado          = excluded.estado,
+            total           = excluded.total,
+            rut_contraparte = excluded.rut_contraparte,
+            razon_social    = excluded.razon_social,
+            folio           = excluded.folio,
+            fecha_emision   = excluded.fecha_emision
+        """,
+        params,
+    )
+
+
 def marcar_pdf(conn: sqlite3.Connection, codigo: str, pdf_path: str) -> None:
     conn.execute("UPDATE facturas SET pdf_path = ? WHERE codigo_sii = ?", (pdf_path, codigo))
 
@@ -516,16 +574,19 @@ def pendientes_de_pdf(conn: sqlite3.Connection, tipo: str = "compra") -> list[st
 
 
 def facturas_para_precarga_pdf(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Todos los documentos con codigo_sii (facturas recibidas, emitidas y
-    boletas BHE), con lo necesario para decidir si su PDF ya está guardado y,
-    si no, descargarlo (ver sync._precargar_pdfs). No filtra por pdf_path a
-    propósito: aunque la BD diga que hay copia, el archivo puede no existir
-    en este disco (p. ej. una BD migrada de otra máquina) y en ese caso hay
-    que volver a bajarlo — el chequeo real es contra el disco, en el sync.
-    Más recientes primero: son los PDF que más probablemente se van a abrir.
+    """Todos los documentos con codigo_sii (facturas recibidas, emitidas,
+    boletas BHE y BTE), con lo necesario para decidir si su PDF ya está
+    guardado y, si no, descargarlo (ver sync._precargar_pdfs). No filtra por
+    pdf_path a propósito: aunque la BD diga que hay copia, el archivo puede
+    no existir en este disco (p. ej. una BD migrada de otra máquina) y en ese
+    caso hay que volver a bajarlo — el chequeo real es contra el disco, en
+    el sync. folio/rut_contraparte se incluyen para las BTE (su PDF se pide
+    por esos datos, no por un href guardado, ver sii_bte.py). Más recientes
+    primero: son los PDF que más probablemente se van a abrir.
     """
     return conn.execute(
-        "SELECT codigo_sii, tipo, fecha_emision, pdf_path, pdf_href_bhe "
+        "SELECT codigo_sii, tipo, fecha_emision, pdf_path, pdf_href_bhe, pdf_href_bte, "
+        "folio, rut_contraparte "
         "FROM facturas WHERE codigo_sii IS NOT NULL AND codigo_sii != '' "
         "ORDER BY fecha_emision DESC"
     ).fetchall()
@@ -624,7 +685,7 @@ def factura_pago_por_codigo(conn: sqlite3.Connection, codigo: str) -> sqlite3.Ro
         f"""
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
                f.razon_social, f.fecha_emision, f.total, f.fecha_pago_tope, f.fecha_reclamo, f.pdf_path,
-               f.descripcion, f.anulada_por, f.pdf_href_bhe, f.centro_costo,
+               f.descripcion, f.anulada_por, f.pdf_href_bhe, f.pdf_href_bte, f.centro_costo,
                {_SQL_CENTRO_MULTI} AS centro_multi,
                COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.factura_id = f.id), 0) AS pagado
         FROM facturas f
