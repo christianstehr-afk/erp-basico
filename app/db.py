@@ -1476,13 +1476,18 @@ def facturas_rechazadas(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def documentos_vencidos(conn: sqlite3.Connection, tipo: str, hoy: str) -> list[dict]:
-    """Facturas de `tipo` con saldo pendiente y fecha tope YA vencida (< hoy).
+    """Facturas de `tipo` con saldo pendiente (ya no exige fecha tope vencida).
 
-    Sirve para el cockpit: 'compra' = pagos vencidos a proveedores,
-    'venta' = cobranzas vencidas a clientes. Excluye guías/NC (vía
+    Sirve para el cockpit: 'compra' = pagos pendientes a proveedores,
+    'venta' = cobranzas pendientes de clientes. Excluye guías/NC (vía
     facturas_con_pago) y las rechazadas. Devuelve dicts con
     codigo_sii, folio, razon_social, fecha_pago_tope, pendiente, pdf_path.
-    Ordenado por fecha tope ascendente (lo más vencido primero).
+    Incluye facturas sin fecha tope o con fecha tope aún no alcanzada
+    (criterio removido a pedido de Christian, 2026-08-13). `hoy` se
+    mantiene en la firma por compatibilidad con los llamadores, pero ya
+    no se usa para filtrar.
+    Ordenado por fecha tope ascendente (lo más vencido primero); las que
+    no tienen fecha tope quedan al final.
     """
     res: list[dict] = []
     for f in facturas_con_pago(conn, tipo=tipo):
@@ -1494,8 +1499,6 @@ def documentos_vencidos(conn: sqlite3.Connection, tipo: str, hoy: str) -> list[d
         if pendiente <= 0:
             continue  # ya pagada/cobrada al 100%
         tope = f["fecha_pago_tope"]
-        if not tope or tope >= hoy:
-            continue  # sin tope o aún no vence
         res.append({
             "codigo_sii": f["codigo_sii"],
             "folio": f["folio"],
@@ -1504,7 +1507,7 @@ def documentos_vencidos(conn: sqlite3.Connection, tipo: str, hoy: str) -> list[d
             "pendiente": pendiente,
             "pdf_path": f["pdf_path"],
         })
-    res.sort(key=lambda d: d["fecha_pago_tope"])
+    res.sort(key=lambda d: (d["fecha_pago_tope"] is None, d["fecha_pago_tope"] or ""))
     return res
 
 
