@@ -681,23 +681,27 @@ def pdf_ver(request: Request, codigo: str):
         return Response(content=data, media_type="application/pdf")
 
     # BTE: mismo criterio que boletas de honorarios (sesión "empresa"), con
-    # el código guardado al sincronizar (pdf_href_bte). El SII etiqueta ese
-    # link "formato html", no PDF (ver sii_bte.py) — se intenta igual por si
-    # acaso, y si no resulta en un PDF real se avisa en vez de caer al
-    # camino de facturas normales (que fallaría igual, con un mensaje
-    # confuso).
+    # el código guardado al sincronizar (pdf_href_bte). Confirmado que el SII
+    # devuelve HTML para este link, no PDF (ver sii_bte.py) — se prueba
+    # primero el PDF por si acaso, y si no resulta se cae al HTML real
+    # (mismo documento que "Ver boleta en formato html" en el SII), servido
+    # embebido en el iframe del visor. Solo si ninguno de los dos funciona
+    # (sesión vencida, BTE puntual con error) se avisa.
     if codigo.startswith("BTE-"):
         client_bhe = _current_client_bhe(request)
-        if client_bhe and row["pdf_href_bte"]:
+        if not client_bhe:
+            return _html_bhe_sin_sesion()
+        if row["pdf_href_bte"]:
             data = sii_bte.obtener_pdf_bytes(client_bhe.session, row["pdf_href_bte"])
             if data:
                 _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
                 return Response(content=data, media_type="application/pdf")
+            html = sii_bte.obtener_html_boleta(client_bhe.session, row["pdf_href_bte"])
+            if html:
+                return HTMLResponse(content=html)
         return Response(
-            "El PDF de esta BTE todavía no se puede descargar automáticamente "
-            "(el SII la muestra en formato html, no como PDF — ver sii_bte.py). "
-            "Se puede ver a mano desde el SII mientras tanto.",
-            status_code=501,
+            "No se pudo obtener el documento de la BTE desde el SII. Intenta de nuevo.",
+            status_code=502,
         )
 
     fuente = _FUENTE_POR_TIPO.get(row["tipo"])
@@ -753,7 +757,9 @@ def pdf_descargar(request: Request, codigo: str):
 
     if codigo.startswith("BTE-"):
         client_bhe = _current_client_bhe(request)
-        if client_bhe and row["pdf_href_bte"]:
+        if not client_bhe:
+            return _html_bhe_sin_sesion()
+        if row["pdf_href_bte"]:
             data = sii_bte.obtener_pdf_bytes(client_bhe.session, row["pdf_href_bte"])
             if data:
                 _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
@@ -761,11 +767,19 @@ def pdf_descargar(request: Request, codigo: str):
                     content=data, media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{_nombre_pdf(row)}"'},
                 )
+            html = sii_bte.obtener_html_boleta(client_bhe.session, row["pdf_href_bte"])
+            if html:
+                # No es un PDF real (ver sii_bte.py): se descarga como .html,
+                # el mismo documento que "Ver boleta en formato html" del SII.
+                nombre = _nombre_pdf(row).rsplit(".", 1)[0] + ".html"
+                return Response(
+                    content=html.encode("utf-8"),
+                    media_type="text/html; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+                )
         return Response(
-            "El PDF de esta BTE todavía no se puede descargar automáticamente "
-            "(el SII la muestra en formato html, no como PDF — ver sii_bte.py). "
-            "Se puede ver a mano desde el SII mientras tanto.",
-            status_code=501,
+            "No se pudo obtener el documento de la BTE desde el SII. Intenta de nuevo.",
+            status_code=502,
         )
 
     fuente = _FUENTE_POR_TIPO.get(row["tipo"])

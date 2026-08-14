@@ -39,13 +39,14 @@ navegador (cuenta empresa, E-AUTO SPA) y pasó el HTML real de cada paso:
      POST) a /cvc_cgi/bte/bte_indiv_cons3?<código>, donde <código> es un
      identificador tipo código de barras (ej. "C777082150000142E1209"), NO
      un par clave=valor. El SII lo etiqueta "Ver boleta en formato html"
-     (ícono html.gif) — a diferencia de facturas/BHE, esto sugiere que
-     devuelve HTML, no un PDF descargable. `obtener_pdf_bytes` igual intenta
-     pedirlo por si acaso devuelve un PDF real, pero SIN CONFIRMAR: si la
-     respuesta no empieza con "%PDF-" (lo más probable, según la etiqueta),
-     devuelve None como cualquier descarga fallida — no hay adjunto original
-     hasta que esto se revise (posible mejora futura: convertir el HTML a
-     PDF, o mostrar ese HTML directo en vez de un PDF).
+     (ícono html.gif) y esto quedó CONFIRMADO (2026-08-14): la respuesta es
+     HTML, no un PDF descargable. `obtener_pdf_bytes` intenta igual por si el
+     SII cambia de formato más adelante (si la respuesta no arranca con
+     "%PDF-" devuelve None); el respaldo real es `obtener_html_boleta`, que
+     trae ese mismo HTML (con un <base href> agregado) para mostrarlo
+     embebido en la app — así "Ver PDF de la factura" en Movimientos CC /
+     Pago a Proveedores igual muestra el documento, aunque no sea un PDF
+     literal. `main.py` prueba primero el PDF y cae a este HTML si falla.
 
   Ejemplo real (E-Auto, agosto 2026, la primera BTE que emitió la empresa):
     folio=1, estado=VIG, fecha=11-08-2026, receptor=11802178-9 "JOSE
@@ -258,12 +259,12 @@ def _meses_a_revisar(anio: int, desde: str | None) -> range:
 def obtener_pdf_bytes(session: requests.Session, ver_href: str | None) -> bytes | None:
     """Descarga el "Ver boleta" de una BTE.
 
-    SIN CONFIRMAR si esto es en realidad un PDF: el SII etiqueta este link
-    "Ver boleta en formato html" (ver docstring del módulo), así que lo más
-    probable es que la respuesta sea HTML, no un PDF descargable. Se intenta
-    igual por si acaso; si la respuesta no arranca con "%PDF-" se trata como
-    "no se pudo obtener el PDF" (devuelve None), igual que sii_docs/sii_bhe
-    cuando fallan — nunca invalida la sesión guardada."""
+    CONFIRMADO (2026-08-14, Christian probó "Ver PDF" desde la app): el SII
+    devuelve HTML para este link, no un PDF descargable — la etiqueta "Ver
+    boleta en formato html" resultó correcta. Esta función igual intenta
+    primero por si el SII cambia de formato más adelante; si la respuesta no
+    arranca con "%PDF-" devuelve None (nunca invalida la sesión guardada). El
+    llamador debe caer a `obtener_html_boleta` como respaldo — ver main.py."""
     if not ver_href:
         return None
     try:
@@ -273,6 +274,42 @@ def obtener_pdf_bytes(session: requests.Session, ver_href: str | None) -> bytes 
     if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
         return resp.content
     return None
+
+
+def _con_base_href(html: str) -> str:
+    """Inserta <base href="https://zeus.sii.cl/"> justo después de <head>,
+    para que las rutas relativas del HTML del SII (imágenes, css, p.ej.
+    "/cvc/comun/html.gif") sigan resolviendo bien cuando este HTML se sirve
+    embebido en nuestra propia app, fuera del dominio del SII."""
+    base_tag = '<base href="https://zeus.sii.cl/">'
+    if re.search(r"<head[^>]*>", html, re.IGNORECASE):
+        return re.sub(r"(<head[^>]*>)", r"\1" + base_tag, html, count=1, flags=re.IGNORECASE)
+    return base_tag + html
+
+
+def obtener_html_boleta(session: requests.Session, ver_href: str | None) -> str | None:
+    """Respaldo de `obtener_pdf_bytes`: descarga el HTML del "Ver boleta" tal
+    cual lo muestra el SII (confirmado que es HTML, no PDF — ver arriba), con
+    un <base href> agregado para que cargue bien embebido en un iframe/pestaña
+    de la app. Se usa para poder mostrar igual el documento aunque no haya un
+    PDF real que ofrecer.
+
+    Devuelve None si no hay `ver_href`, si falla la conexión, si la página
+    parece de login (sesión vencida), o si viene vacía — el llamador debe
+    tratar eso igual que un PDF no disponible (nunca invalida la sesión
+    guardada: una BTE puntual fallando no dice nada sobre el resto)."""
+    if not ver_href:
+        return None
+    try:
+        resp = session.get(f"{VER_URL}?{ver_href}", timeout=60)
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200 or resp.content[:5] == b"%PDF-":
+        return None
+    html = resp.content.decode("iso-8859-1", "replace")
+    if not html.strip() or _es_pagina_de_login(html):
+        return None
+    return _con_base_href(html)
 
 
 def diagnostico(session: requests.Session, url: str, params: dict) -> str:
