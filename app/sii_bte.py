@@ -65,6 +65,7 @@ que de verdad hay que pagar).
 """
 from __future__ import annotations
 
+import io
 import re
 import unicodedata
 
@@ -310,6 +311,36 @@ def obtener_html_boleta(session: requests.Session, ver_href: str | None) -> str 
     if not html.strip() or _es_pagina_de_login(html):
         return None
     return _con_base_href(html)
+
+
+def html_a_pdf_bytes(html: str | None) -> bytes | None:
+    """Convierte a PDF el HTML de una boleta (el que devuelve
+    `obtener_html_boleta`), para poder guardarlo/imprimirlo como cualquier
+    otro documento de la app — el SII no ofrece un PDF real para las BTE
+    (ver arriba), así que esta es la única forma de tener uno.
+
+    Usa xhtml2pdf (motor HTML->PDF puro Python, sin binarios ni librerías
+    del sistema — apto para el Dockerfile actual, que no las instala).
+    Probado (2026-08-14) contra el HTML real de tablas del SII (mismo estilo
+    viejo con <font>/<td bgcolor>/etc. que usan estas páginas): el resultado
+    reproduce fielmente la tabla, con timbres/bordes incluidos. Devuelve None
+    si la conversión falla o no produce un PDF válido — el llamador debe
+    caer a mostrar el HTML crudo como respaldo (ver `obtener_html_boleta`)."""
+    if not html:
+        return None
+    try:
+        from xhtml2pdf import pisa
+    except ImportError:
+        return None
+    buf = io.BytesIO()
+    try:
+        resultado = pisa.CreatePDF(html, dest=buf)
+    except Exception:
+        return None
+    if resultado.err:
+        return None
+    data = buf.getvalue()
+    return data if data[:5] == b"%PDF-" else None
 
 
 def diagnostico(session: requests.Session, url: str, params: dict) -> str:

@@ -683,20 +683,25 @@ def pdf_ver(request: Request, codigo: str):
     # BTE: mismo criterio que boletas de honorarios (sesión "empresa"), con
     # el código guardado al sincronizar (pdf_href_bte). Confirmado que el SII
     # devuelve HTML para este link, no PDF (ver sii_bte.py) — se prueba
-    # primero el PDF por si acaso, y si no resulta se cae al HTML real
-    # (mismo documento que "Ver boleta en formato html" en el SII), servido
-    # embebido en el iframe del visor. Solo si ninguno de los dos funciona
-    # (sesión vencida, BTE puntual con error) se avisa.
+    # primero el PDF real por si acaso, y si no resulta se arma un PDF a
+    # partir de ese HTML (sii_bte.html_a_pdf_bytes), para que se pueda
+    # guardar/imprimir igual que cualquier otro documento. Solo si ni el PDF
+    # ni la conversión resultan se cae a mostrar el HTML crudo, y si tampoco
+    # eso se pudo traer (sesión vencida, BTE puntual con error) se avisa.
     if codigo.startswith("BTE-"):
         client_bhe = _current_client_bhe(request)
         if not client_bhe:
             return _html_bhe_sin_sesion()
         if row["pdf_href_bte"]:
             data = sii_bte.obtener_pdf_bytes(client_bhe.session, row["pdf_href_bte"])
+            html = None
+            if not data:
+                html = sii_bte.obtener_html_boleta(client_bhe.session, row["pdf_href_bte"])
+                if html:
+                    data = sii_bte.html_a_pdf_bytes(html)
             if data:
                 _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
                 return Response(content=data, media_type="application/pdf")
-            html = sii_bte.obtener_html_boleta(client_bhe.session, row["pdf_href_bte"])
             if html:
                 return HTMLResponse(content=html)
         return Response(
@@ -761,16 +766,20 @@ def pdf_descargar(request: Request, codigo: str):
             return _html_bhe_sin_sesion()
         if row["pdf_href_bte"]:
             data = sii_bte.obtener_pdf_bytes(client_bhe.session, row["pdf_href_bte"])
+            html = None
+            if not data:
+                html = sii_bte.obtener_html_boleta(client_bhe.session, row["pdf_href_bte"])
+                if html:
+                    data = sii_bte.html_a_pdf_bytes(html)
             if data:
                 _cachear_pdf(codigo, row["tipo"], row["fecha_emision"], data)
                 return Response(
                     content=data, media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{_nombre_pdf(row)}"'},
                 )
-            html = sii_bte.obtener_html_boleta(client_bhe.session, row["pdf_href_bte"])
             if html:
-                # No es un PDF real (ver sii_bte.py): se descarga como .html,
-                # el mismo documento que "Ver boleta en formato html" del SII.
+                # La conversión a PDF falló pero el HTML sí se obtuvo: se
+                # descarga igual como .html (mejor que nada).
                 nombre = _nombre_pdf(row).rsplit(".", 1)[0] + ".html"
                 return Response(
                     content=html.encode("utf-8"),
@@ -1023,12 +1032,15 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
                     factura_bytes = None
         elif codigo.startswith("BTE-"):
             # El SII etiqueta el link "Ver boleta" de una BTE como "formato
-            # html", no PDF (ver sii_bte.py) — lo más probable es que esto
-            # dé None. El PDF de gestión se arma igual, solo sin el
-            # original adjunto (ver incluye_original más abajo).
+            # html", no PDF (ver sii_bte.py) — esto normalmente da None, así
+            # que se arma un PDF a partir de ese HTML (html_a_pdf_bytes) para
+            # poder anexarlo igual que el original de cualquier otra factura.
             client_bhe = _current_client_bhe(request)
             if client_bhe:
                 factura_bytes = sii_bte.obtener_pdf_bytes(client_bhe.session, f["pdf_href_bte"])
+                if not factura_bytes:
+                    html = sii_bte.obtener_html_boleta(client_bhe.session, f["pdf_href_bte"])
+                    factura_bytes = sii_bte.html_a_pdf_bytes(html)
         else:
             fuente = _FUENTE_POR_TIPO.get(cfg["tipo"])
             if fuente:
