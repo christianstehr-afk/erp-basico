@@ -190,10 +190,12 @@
             </td>
             <td data-value="{{ m['origen'] }}" style="padding:11px 14px">
               {% if m["origen"] == "factura" %}
+                {% set _ref = m["ref"] or "" %}
+                {% set etiqueta = "BTE" if _ref.startswith("BTE-") else ("BHE" if _ref.startswith("BHE-") else "Factura") %}
                 {% if m["ref"] %}
-                <a href="/pdf/{{ m['ref'] }}" target="_blank" class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6;border-bottom:1px dotted #3b82f6">Factura ↗</a>
+                <a href="/pdf/{{ m['ref'] }}" target="_blank" class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6;border-bottom:1px dotted #3b82f6">{{ etiqueta }} ↗</a>
                 {% else %}
-                <span class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6">Factura</span>
+                <span class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6">{{ etiqueta }}</span>
                 {% endif %}
               {% elif m["origen"] == "rendicion" %}
                 <span class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6">Rendición</span>

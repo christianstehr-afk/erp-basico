@@ -662,6 +662,22 @@ def construir_zip_rendiciones(rendiciones: list[dict]) -> bytes:
 _ORIGEN_LABEL = {"factura": "Factura", "rendicion": "Rendición", "manual": "Manual"}
 
 
+def _etiqueta_origen(m: dict) -> str:
+    """Etiqueta a mostrar en la columna ORIGEN. Las BTE y BHE se guardan
+    internamente con origen='factura' (mismo tratamiento que una factura,
+    ver sincronizar_movimientos_cc en db.py), pero en pantalla y en el PDF
+    deben distinguirse por el prefijo de su código (ref)."""
+    origen = m.get("origen")
+    if origen == "factura":
+        ref = m.get("ref") or ""
+        if ref.startswith("BTE-"):
+            return "BTE"
+        if ref.startswith("BHE-"):
+            return "BHE"
+        return "Factura"
+    return _ORIGEN_LABEL.get(origen, origen or "")
+
+
 def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
                                  total_ingresos: int, total_egresos: int) -> bytes:
     """PDF del listado de Movimientos CC, en el mismo orden y rango con que se
@@ -766,7 +782,7 @@ def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
 
         c.setFillColorRGB(0.5, 0.5, 0.5)
         c.setFont("Helvetica", 7.5)
-        c.drawString(col_origen, y, _ORIGEN_LABEL.get(m["origen"], m["origen"] or ""))
+        c.drawString(col_origen, y, _etiqueta_origen(m))
         c.setFont("Helvetica", 8.5)
 
         y -= 5.5 * mm
