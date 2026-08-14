@@ -313,6 +313,34 @@ def obtener_html_boleta(session: requests.Session, ver_href: str | None) -> str 
     return _con_base_href(html)
 
 
+def _limpiar_para_pdf(html: str) -> str:
+    """Prepara el HTML de la boleta antes de convertirlo a PDF (no toca el
+    HTML que se muestra tal cual en el visor — ver `obtener_html_boleta`,
+    esto es solo para `html_a_pdf_bytes`):
+
+    - Quita <input>/<button> (los botones "Imprimir"/"Volver"/etc. de la
+      página del SII): no son parte del documento, y xhtml2pdf los renderiza
+      como recuadros vacíos sueltos fuera de la boleta (visto 2026-08-14).
+    - Quita <script>: no aporta nada a un PDF y puede confundir al parser.
+    - Fuerza `vertical-align: middle` en las celdas de tabla: xhtml2pdf no
+      hereda bien el centrado vertical del HTML original, dejando el texto
+      pegado arriba de cada celda."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all(["input", "button", "script"]):
+        tag.decompose()
+    estilo = soup.new_tag("style")
+    estilo.string = "td, th { vertical-align: middle; }"
+    if soup.head:
+        soup.head.append(estilo)
+    elif soup.html:
+        head = soup.new_tag("head")
+        head.append(estilo)
+        soup.html.insert(0, head)
+    else:
+        return str(estilo) + str(soup)
+    return str(soup)
+
+
 def html_a_pdf_bytes(html: str | None) -> bytes | None:
     """Convierte a PDF el HTML de una boleta (el que devuelve
     `obtener_html_boleta`), para poder guardarlo/imprimirlo como cualquier
@@ -320,18 +348,20 @@ def html_a_pdf_bytes(html: str | None) -> bytes | None:
     (ver arriba), así que esta es la única forma de tener uno.
 
     Usa xhtml2pdf (motor HTML->PDF puro Python, sin binarios ni librerías
-    del sistema — apto para el Dockerfile actual, que no las instala).
-    Probado (2026-08-14) contra el HTML real de tablas del SII (mismo estilo
-    viejo con <font>/<td bgcolor>/etc. que usan estas páginas): el resultado
-    reproduce fielmente la tabla, con timbres/bordes incluidos. Devuelve None
-    si la conversión falla o no produce un PDF válido — el llamador debe
-    caer a mostrar el HTML crudo como respaldo (ver `obtener_html_boleta`)."""
+    del sistema — apto para el Dockerfile actual, que no las instala), sobre
+    el HTML ya limpiado por `_limpiar_para_pdf`. Probado (2026-08-14) contra
+    el HTML real de tablas del SII (mismo estilo viejo con <font>/<td
+    bgcolor>/etc. que usan estas páginas): el resultado reproduce fielmente
+    la tabla, con timbres/bordes incluidos. Devuelve None si la conversión
+    falla o no produce un PDF válido — el llamador debe caer a mostrar el
+    HTML crudo como respaldo (ver `obtener_html_boleta`)."""
     if not html:
         return None
     try:
         from xhtml2pdf import pisa
     except ImportError:
         return None
+    html = _limpiar_para_pdf(html)
     buf = io.BytesIO()
     try:
         resultado = pisa.CreatePDF(html, dest=buf)

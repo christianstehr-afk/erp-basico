@@ -427,18 +427,23 @@ def debug_bhe_inspeccionar(request: Request, anio: int = ANIO, url: str = ""):
 
 
 @app.get("/debug/bte/inspeccionar", response_class=PlainTextResponse)
-def debug_bte_inspeccionar(request: Request, anio: int = ANIO, mes: int = 0, url: str = ""):
+def debug_bte_inspeccionar(request: Request, anio: int = ANIO, mes: int = 0, url: str = "",
+                            codigo: str = ""):
     """Herramienta temporal de diagnóstico (mismo propósito y mecanismo que
     /debug/bhe/inspeccionar arriba): usa la sesión empresa real (ya
     logueada) para volcar los links/tablas/formularios de la página de BTE
     emitidas del SII — útil si en algún mes el parseo de sii_bte.py no
     reconoce algo (su flujo base ya está confirmado contra el SII real, ver
-    docstring de ese módulo).
+    docstring de ese módulo), o si el HTML de una boleta puntual necesita
+    revisarse para ajustar `html_a_pdf_bytes` (estética del PDF generado).
 
-    Sin `url`: consulta el detalle mensual (mismo endpoint y parámetros que
-    usa el sync) del mes/año pedidos — `mes` por defecto es el mes actual.
-    Con `url`: consulta esa URL tal cual (para inspeccionar, p. ej., el link
-    "Ver boleta" de una fila puntual).
+    Sin `url` ni `codigo`: consulta el detalle mensual (mismo endpoint y
+    parámetros que usa el sync) del mes/año pedidos — `mes` por defecto es
+    el mes actual.
+    Con `codigo` (el codigo_sii de una BTE, ej. "BTE-11802178-9-2"): busca su
+    `pdf_href_bte` guardado y consulta directo el "Ver boleta" de esa BTE
+    puntual — la forma más simple de conseguir su HTML real.
+    Con `url`: consulta esa URL tal cual.
     """
     client = _guard(request)
     if not client:
@@ -449,7 +454,20 @@ def debug_bte_inspeccionar(request: Request, anio: int = ANIO, mes: int = 0, url
             "No hay sesión empresa activa. Cerrá sesión y volvé a entrar con "
             "el usuario y clave empresa.", status_code=401,
         )
-    if url:
+    if codigo:
+        conn = db.get_conn()
+        try:
+            fila = conn.execute(
+                "SELECT pdf_href_bte FROM facturas WHERE codigo_sii = ?", (codigo,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if not fila or not fila["pdf_href_bte"]:
+            return PlainTextResponse(
+                f"No se encontró pdf_href_bte guardado para {codigo!r}.", status_code=404,
+            )
+        target, params = f"{sii_bte.VER_URL}?{fila['pdf_href_bte']}", {}
+    elif url:
         target, params = url, {}
     else:
         target = sii_bte.CONSULTA_URL
