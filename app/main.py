@@ -1969,6 +1969,11 @@ def rendicion_eliminar(request: Request, rid: int):
 # o de una rendición son de solo lectura acá (se editan/borran desde su
 # origen y el espejo se sincroniza solo, ver db.sincronizar_movimientos_cc);
 # los manuales se pueden agregar, editar y borrar libremente.
+#
+# La columna ORIGEN enlaza al comprobante de gestión en PDF del movimiento (no
+# al documento pelado): factura/BTE/BHE -> /pagos/ingresos|proveedores/<codigo>/pdf
+# según el flujo (Ingreso = emitidas, Egreso = recibidas), rendición ->
+# /pagos/rendiciones/<id>/pdf. Ver la plantilla movimientos_cc.html.
 # ---------------------------------------------------------------------------
 
 def _rango_movimientos(desde: str | None, hasta: str | None) -> tuple[str, str]:

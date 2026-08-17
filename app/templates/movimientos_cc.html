@@ -189,16 +189,28 @@
               {% endif %}
             </td>
             <td data-value="{{ m['origen'] }}" style="padding:11px 14px">
+              {%- set _badge_link = "background:rgba(59,130,246,.15);color:#3b82f6;border-bottom:1px dotted #3b82f6" -%}
+              {%- set _badge = "background:rgba(59,130,246,.15);color:#3b82f6" -%}
               {% if m["origen"] == "factura" %}
                 {% set _ref = m["ref"] or "" %}
                 {% set etiqueta = "BTE" if _ref.startswith("BTE-") else ("BHE" if _ref.startswith("BHE-") else "Factura") %}
-                {% if m["ref"] %}
-                <a href="/pdf/{{ m['ref'] }}" target="_blank" class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6;border-bottom:1px dotted #3b82f6">{{ etiqueta }} ↗</a>
+                {# El link abre el comprobante de gestión del cobro/pago (resumen +
+                   pagos parciales + el documento original anexado al final), no el
+                   documento pelado: Ingresos si el movimiento es un Ingreso,
+                   Pago a proveedores si es un Egreso. BTE y BHE son compras, o sea
+                   siempre caen en proveedores. #}
+                {% set _seccion = "ingresos" if ing else "proveedores" %}
+                {% if _ref %}
+                <a href="/pagos/{{ _seccion }}/{{ _ref }}/pdf" target="_blank" class="mcc-badge" style="{{ _badge_link }}">{{ etiqueta }} ↗</a>
                 {% else %}
-                <span class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6">{{ etiqueta }}</span>
+                <span class="mcc-badge" style="{{ _badge }}">{{ etiqueta }}</span>
                 {% endif %}
               {% elif m["origen"] == "rendicion" %}
-                <span class="mcc-badge" style="background:rgba(59,130,246,.15);color:#3b82f6">Rendición</span>
+                {% if m["rendicion_id"] %}
+                <a href="/pagos/rendiciones/{{ m['rendicion_id'] }}/pdf" target="_blank" class="mcc-badge" style="{{ _badge_link }}">Rendición ↗</a>
+                {% else %}
+                <span class="mcc-badge" style="{{ _badge }}">Rendición</span>
+                {% endif %}
               {% else %}
                 <span class="mcc-badge" style="background:#1c1c1c;color:var(--slate)">Manual</span>
               {% endif %}

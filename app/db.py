@@ -1336,10 +1336,14 @@ def movimientos_cc_en_rango(conn: sqlite3.Connection, desde: str, hasta: str) ->
     vivo: las filas de factura lo heredan de la factura, las de rendición
     juntan los centros de sus ítems, y las manuales usan su propia columna.
     (Así, cambiar el centro de una factura ya imputada se refleja al tiro acá,
-    sin re-sincronizar nada.)"""
+    sin re-sincronizar nada.)
+
+    También expone `rendicion_id` (la rendición del pago, si origen='rendicion')
+    para poder enlazar su PDF desde la columna ORIGEN de la pantalla."""
     return conn.execute(
         f"""
         SELECT m.*,
+               rp.rendicion_id AS rendicion_id,
                COALESCE(
                    {_SQL_CENTRO_MULTI_MOV},
                    {_SQL_CENTRO_MULTI},
