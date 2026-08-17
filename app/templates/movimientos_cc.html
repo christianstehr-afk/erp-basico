@@ -16,6 +16,8 @@
     .mcc-input{background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)}
     .mcc-label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px}
     .mcc-btn{background:var(--green);color:#fff;border:none;padding:11px 20px;border-radius:var(--radius);font-weight:700;font-size:13px;cursor:pointer}
+    .mcc-file{color:var(--mist);font-family:var(--mono);font-size:11px;max-width:230px}
+    .mcc-file::file-selector-button{background:#111;border:1px solid #262626;color:var(--mist);padding:9px 12px;border-radius:var(--radius);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer;margin-right:10px}
     .mcc-badge{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:3px;font-weight:700}
     .mcc-link-btn{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:5px 10px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700;background:none;cursor:pointer}
     .mcc-link-btn.danger{color:#c0392b}
@@ -73,7 +75,8 @@
     <!-- Agregar movimiento manual -->
     <div style="border:1px solid #1c1c1c;border-radius:var(--radius);padding:20px;margin-bottom:22px;background:#0f0f0f">
       <div class="eyebrow" style="margin-bottom:14px">+ Agregar movimiento manual</div>
-      <form method="post" action="/movimientos/agregar" style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+      <form method="post" action="/movimientos/agregar" enctype="multipart/form-data"
+            style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
         <input type="hidden" name="desde" value="{{ desde }}">
         <input type="hidden" name="hasta" value="{{ hasta }}">
         <div>
@@ -114,6 +117,10 @@
         <div>
           <label class="mcc-label">Monto</label>
           <input type="number" name="monto" min="1" step="1" required class="mcc-input" style="width:140px">
+        </div>
+        <div>
+          <label class="mcc-label">Adjuntos</label>
+          <input type="file" name="archivos" multiple class="mcc-file">
         </div>
         <button type="submit" class="mcc-btn">Agregar</button>
       </form>
@@ -188,7 +195,7 @@
               <span style="color:var(--slate)">—</span>
               {% endif %}
             </td>
-            <td data-value="{{ m['origen'] }}" style="padding:11px 14px">
+            <td data-value="{{ m['origen'] }}" style="padding:11px 14px;white-space:nowrap">
               {%- set _badge_link = "background:rgba(59,130,246,.15);color:#3b82f6;border-bottom:1px dotted #3b82f6" -%}
               {%- set _badge = "background:rgba(59,130,246,.15);color:#3b82f6" -%}
               {% if m["origen"] == "factura" %}
@@ -212,7 +219,13 @@
                 <span class="mcc-badge" style="{{ _badge }}">Rendición</span>
                 {% endif %}
               {% else %}
-                <span class="mcc-badge" style="background:#1c1c1c;color:var(--slate)">Manual</span>
+                {# Manual: PDF propio (ficha del movimiento + sus adjuntos anexados). #}
+                <a href="/movimientos/{{ m['id'] }}/pdf" target="_blank" class="mcc-badge"
+                   style="background:#1c1c1c;color:var(--mist);border-bottom:1px dotted var(--slate)">Manual ↗</a>
+                {% set _adj = adjuntos_mov.get(m['id']) or [] %}
+                {% if _adj %}
+                <span style="color:var(--slate);font-family:var(--mono);font-size:10px;margin-left:6px">{{ _adj|length }} adj.</span>
+                {% endif %}
               {% endif %}
             </td>
             <td style="padding:11px 14px;white-space:nowrap">
@@ -234,6 +247,7 @@
           <tr class="mcc-edit-row" id="edit-{{ m['id'] }}">
             <td colspan="7" style="padding:14px;background:#0c0c0c;border-top:1px solid #161616">
               <form method="post" action="/movimientos/{{ m['id'] }}/editar"
+                    enctype="multipart/form-data"
                     style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
                 <input type="hidden" name="desde" value="{{ desde }}">
                 <input type="hidden" name="hasta" value="{{ hasta }}">
@@ -276,9 +290,35 @@
                   <label class="mcc-label">Monto</label>
                   <input type="number" name="monto" value="{{ m['monto'] }}" min="1" step="1" required class="mcc-input" style="width:140px">
                 </div>
+                <div>
+                  <label class="mcc-label">Agregar adjuntos</label>
+                  <input type="file" name="archivos" multiple class="mcc-file">
+                </div>
                 <button type="submit" class="mcc-btn">Guardar</button>
                 <button type="button" class="mcc-link-btn" onclick="toggleEdit({{ m['id'] }})">Cancelar</button>
               </form>
+              {# Adjuntos ya cargados: se descargan de a uno y se quitan con su
+                 propio form (fuera del form de edición, que no puede anidarse). #}
+              {% set adj_m = adjuntos_mov.get(m['id']) or [] %}
+              {% if adj_m %}
+              <div style="margin-top:14px;border-top:1px solid #161616;padding-top:12px">
+                <div class="mcc-label">Adjuntos ({{ adj_m|length }})</div>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  {% for a in adj_m %}
+                  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                    <a href="/movimientos/{{ m['id'] }}/adjunto/{{ a['id'] }}/descargar"
+                       style="color:var(--mist);font-size:12px">{{ a["nombre_archivo"] }}</a>
+                    <form method="post" action="/movimientos/{{ m['id'] }}/adjunto/{{ a['id'] }}/eliminar"
+                          style="display:inline" onsubmit="return confirm('¿Quitar este adjunto?');">
+                      <input type="hidden" name="desde" value="{{ desde }}">
+                      <input type="hidden" name="hasta" value="{{ hasta }}">
+                      <button type="submit" class="mcc-link-btn danger">Quitar</button>
+                    </form>
+                  </div>
+                  {% endfor %}
+                </div>
+              </div>
+              {% endif %}
             </td>
           </tr>
           {% endif %}

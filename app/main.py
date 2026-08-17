@@ -54,6 +54,13 @@ ADJUNTOS_DIR = Path(
 ADJUNTOS_FACTURAS_DIR = Path(
     os.environ.get("ADJUNTOS_FACTURAS_DIR", ADJUNTOS_DIR.parent / "facturas")
 )
+# Carpeta donde se guardan los adjuntos de un movimiento MANUAL de
+# Movimientos CC (comprobante de transferencia, cartola, boleta suelta). Misma
+# lógica que ADJUNTOS_FACTURAS_DIR: hermana de ADJUNTOS_DIR para que en
+# producción caiga sola dentro del volumen persistente, sin variable nueva.
+ADJUNTOS_MOVIMIENTOS_DIR = Path(
+    os.environ.get("ADJUNTOS_MOVIMIENTOS_DIR", ADJUNTOS_DIR.parent / "movimientos")
+)
 
 # Carpeta donde queda guardada cada copia del Excel de log descargado desde el
 # Cockpit (además de servirse como descarga en el navegador). Vive dentro del
@@ -534,7 +541,8 @@ def facturas_alias():
 def respaldo_db(request: Request):
     """Descarga un .zip con TODO lo necesario para reconstruir la app frente a
     un desastre informático (botón "Descargar Respaldo" del Cockpit): la base
-    de datos, los adjuntos de rendiciones y de gestión de facturas, y una
+    de datos, los adjuntos de rendiciones, de gestión de facturas y de los
+    movimientos manuales de Movimientos CC, y una
     copia del código tal como está corriendo. NO incluye los PDF de facturas
     y boletas del SII (pdf_store/PDF_DIR): son recuperables del SII en
     cualquier momento, así que respaldarlos solo agrandaría el .zip sin
@@ -545,7 +553,7 @@ def respaldo_db(request: Request):
     db_bytes = db.respaldo_bytes()
     data = exportar.construir_respaldo_completo(
         db_bytes, ADJUNTOS_DIR, ADJUNTOS_FACTURAS_DIR, BASE_DIR.parent,
-        fecha=date.today().isoformat(),
+        fecha=date.today().isoformat(), adjuntos_movimientos_dir=ADJUNTOS_MOVIMIENTOS_DIR,
     )
     nombre = f"RespaldoCompletoERP_{date.today():%Y%m%d}.zip"
     return Response(
@@ -1610,6 +1618,29 @@ def _guardar_adjuntos_factura(conn, factura_id: int, archivos: list[UploadFile])
         db.agregar_adjunto_factura(conn, factura_id, up.filename, str(ruta))
 
 
+def _guardar_adjuntos_movimiento(conn, mid: int, archivos: list[UploadFile]) -> int:
+    """Guarda en disco los adjuntos de un movimiento MANUAL de Movimientos CC
+    y los registra en la BD. Mismo patrón que _guardar_adjuntos (rendiciones)
+    y _guardar_adjuntos_factura. Devuelve cuántos archivos se guardaron."""
+    destino = ADJUNTOS_MOVIMIENTOS_DIR / str(mid)
+    n = 0
+    for up in archivos or []:
+        if not up or not (up.filename or "").strip():
+            continue  # input de archivo vacío
+        destino.mkdir(parents=True, exist_ok=True)
+        seguro = _nombre_seguro(up.filename)
+        ruta = destino / seguro
+        i = 1
+        while ruta.exists():  # evita sobrescribir
+            ruta = destino / f"{ruta.stem}_{i}{ruta.suffix}"
+            i += 1
+        with ruta.open("wb") as fh:
+            shutil.copyfileobj(up.file, fh)
+        db.agregar_adjunto_movimiento(conn, mid, up.filename, str(ruta))
+        n += 1
+    return n
+
+
 def _render_rendicion(request: Request, client, rid: int,
                       error: str | None = None, status_code: int = 200):
     conn = db.get_conn()
@@ -1973,7 +2004,12 @@ def rendicion_eliminar(request: Request, rid: int):
 # La columna ORIGEN enlaza al comprobante de gestión en PDF del movimiento (no
 # al documento pelado): factura/BTE/BHE -> /pagos/ingresos|proveedores/<codigo>/pdf
 # según el flujo (Ingreso = emitidas, Egreso = recibidas), rendición ->
-# /pagos/rendiciones/<id>/pdf. Ver la plantilla movimientos_cc.html.
+# /pagos/rendiciones/<id>/pdf, y manual -> /movimientos/<id>/pdf (ficha del
+# movimiento + sus adjuntos). Ver la plantilla movimientos_cc.html.
+#
+# Los movimientos manuales aceptan adjuntos (comprobante de transferencia,
+# cartola, boleta suelta) al crearlos y al editarlos; se guardan en
+# ADJUNTOS_MOVIMIENTOS_DIR y quedan anexados al final de ese PDF.
 # ---------------------------------------------------------------------------
 
 def _rango_movimientos(desde: str | None, hasta: str | None) -> tuple[str, str]:
@@ -2030,6 +2066,9 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
         # centros" en la plantilla). Vacía para los que no están distribuidos.
         ids_manual = [m["id"] for m in movs if m["origen"] == "manual"]
         distribuciones = db.distribuciones_de_movimientos(conn, ids_manual)
+        # Adjuntos de esos mismos movimientos manuales, para listarlos (con
+        # descargar/quitar) dentro del form de edición.
+        adjuntos_mov = db.adjuntos_de_movimientos(conn, ids_manual)
     finally:
         conn.close()
     # Orden por defecto en esta pantalla: fecha descendente (lo más reciente
@@ -2050,6 +2089,7 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
             "centros_ingreso": centros.grupos("ingreso"),
             "centros_gasto": centros.grupos("gasto"),
             "distribuciones": distribuciones,
+            "adjuntos_mov": adjuntos_mov,
         },
     )
 
@@ -2079,6 +2119,7 @@ def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = F
                         descripcion: str = Form(...), monto: str = Form(...),
                         centro: str = Form(""),
                         centro_dist: list[str] = Form([]), monto_dist: list[str] = Form([]),
+                        archivos: list[UploadFile] = File(default=[]),
                         desde: str = Form(""), hasta: str = Form("")):
     client = _guard(request)
     if not client:
@@ -2132,10 +2173,13 @@ def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = F
 
     conn = db.get_conn()
     error = None
+    n_adjuntos = 0
     try:
         mid = db.agregar_movimiento_manual(conn, fecha, flujo, descripcion, monto_int, centro=centro)
         if distribuir:
             error = db.set_distribucion_movimiento(conn, mid, monto_int, filas_dist)
+        if not error:
+            n_adjuntos = _guardar_adjuntos_movimiento(conn, mid, archivos)
         if error:
             conn.rollback()
         else:
@@ -2147,7 +2191,8 @@ def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = F
     resumen = (", ".join(f"{f['centro']} ${f['monto']}" for f in filas_dist)
                if distribuir else centro)
     _log_evento(request, f"Movimiento CC agregado (manual) · {flujo} ${monto_int} el {fecha} · {descripcion}"
-                         + (f" · {resumen}" if resumen else ""))
+                         + (f" · {resumen}" if resumen else "")
+                         + (f" · {n_adjuntos} adjunto(s)" if n_adjuntos else ""))
     return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
 
 
@@ -2156,6 +2201,7 @@ def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
                        flujo: str = Form(...), descripcion: str = Form(...),
                        monto: str = Form(...), centro: str = Form(""),
                        centro_dist: list[str] = Form([]), monto_dist: list[str] = Form([]),
+                       archivos: list[UploadFile] = File(default=[]),
                        desde: str = Form(""), hasta: str = Form("")):
     client = _guard(request)
     if not client:
@@ -2208,11 +2254,14 @@ def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
 
     conn = db.get_conn()
     error = None
+    n_adjuntos = 0
     try:
         ok = db.editar_movimiento_manual(conn, mid, fecha, flujo, descripcion, monto_int,
                                          centro=centro)
         if ok and distribuir:
             error = db.set_distribucion_movimiento(conn, mid, monto_int, filas_dist)
+        if ok and not error:
+            n_adjuntos = _guardar_adjuntos_movimiento(conn, mid, archivos)
         if error:
             conn.rollback()
         else:
@@ -2226,7 +2275,8 @@ def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
     resumen = (", ".join(f"{f['centro']} ${f['monto']}" for f in filas_dist)
                if distribuir else centro)
     _log_evento(request, f"Movimiento CC editado (manual) id {mid} · {flujo} ${monto_int} el {fecha}"
-                         + (f" · {resumen}" if resumen else ""))
+                         + (f" · {resumen}" if resumen else "")
+                         + (f" · +{n_adjuntos} adjunto(s)" if n_adjuntos else ""))
     return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
 
 
@@ -2238,12 +2288,92 @@ def movimientos_eliminar(request: Request, mid: int, desde: str = Form(""), hast
     d, h = _rango_movimientos(desde, hasta)
     conn = db.get_conn()
     try:
+        # Las rutas de los adjuntos se piden ANTES de borrar la fila (el
+        # DELETE se lleva también sus filas en movimiento_adjuntos, ver
+        # eliminar_movimiento_manual); los archivos en disco se eliminan
+        # después, solo si el borrado se concretó.
+        paths = [a["path"] for a in db.adjuntos_de_movimiento(conn, mid)]
         ok = db.eliminar_movimiento_manual(conn, mid)
         conn.commit()
     finally:
         conn.close()
     if ok:
+        for ruta in paths:
+            try:
+                Path(ruta).unlink(missing_ok=True)
+            except OSError:
+                pass
         _log_evento(request, f"Movimiento CC eliminado (manual) id {mid}")
+    return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
+
+
+@app.get("/movimientos/{mid}/pdf")
+def movimiento_pdf(request: Request, mid: int):
+    """PDF de UN movimiento manual de Movimientos CC (link en la etiqueta
+    "Manual" de la columna ORIGEN): la ficha del movimiento + sus adjuntos
+    anexados al final (imágenes una por página, PDF tal cual). Se devuelve
+    inline, para abrirlo en una pestaña nueva igual que el resto de los PDF
+    de la app."""
+    if not _guard(request):
+        return RedirectResponse("/", status_code=303)
+    conn = db.get_conn()
+    try:
+        m = db.movimiento_cc_por_id(conn, mid)
+        if not m:
+            return HTMLResponse("<p>Movimiento no encontrado.</p>", status_code=404)
+        if m["origen"] != "manual":
+            return HTMLResponse(
+                "<p>Ese movimiento no es manual: su PDF se descarga desde su "
+                "factura o rendición.</p>", status_code=404)
+        adjuntos = [dict(a) for a in db.adjuntos_de_movimiento(conn, mid)]
+        dist = db.centros_de_movimiento(conn, mid)
+    finally:
+        conn.close()
+    data = exportar._pdf_de_movimiento(m, adjuntos, dist)
+    data = exportar.anexar_archivos(data, adjuntos)
+    nombre = f"Movimiento_{db.codigo_movimiento(mid)}.pdf"
+    return Response(
+        content=data, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{nombre}"'},
+    )
+
+
+@app.get("/movimientos/{mid}/adjunto/{adj_id}/descargar")
+def movimiento_descargar_adjunto(request: Request, mid: int, adj_id: int):
+    if not _guard(request):
+        return RedirectResponse("/", status_code=303)
+    conn = db.get_conn()
+    try:
+        adj = db.adjunto_movimiento_por_id(conn, adj_id)
+    finally:
+        conn.close()
+    if not adj or adj["movimiento_id"] != mid or not Path(adj["path"]).exists():
+        return Response("Adjunto no disponible", status_code=404)
+    return FileResponse(adj["path"], filename=adj["nombre_archivo"])
+
+
+@app.post("/movimientos/{mid}/adjunto/{adj_id}/eliminar")
+def movimiento_eliminar_adjunto(request: Request, mid: int, adj_id: int,
+                                desde: str = Form(""), hasta: str = Form("")):
+    if not _guard(request):
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    eliminado = False
+    try:
+        adj = db.adjunto_movimiento_por_id(conn, adj_id)
+        if adj and adj["movimiento_id"] == mid:
+            db.eliminar_adjunto_movimiento(conn, adj_id, mid)
+            conn.commit()
+            eliminado = True
+            try:
+                Path(adj["path"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+    finally:
+        conn.close()
+    if eliminado:
+        _log_evento(request, f"Adjunto eliminado de movimiento CC id {mid} · adjunto id {adj_id}")
     return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
 
 

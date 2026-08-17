@@ -284,6 +284,23 @@ CREATE INDEX IF NOT EXISTS idx_movimiento_centros ON movimiento_centros(movimien
 CREATE UNIQUE INDEX IF NOT EXISTS idx_movimiento_centros_unico
     ON movimiento_centros(movimiento_id, centro);
 
+-- Adjuntos de un movimiento MANUAL de Movimientos CC (comprobante de la
+-- transferencia, cartola, boleta suelta, etc.). Mismo patrón que
+-- rendicion_adjuntos y factura_adjuntos. Solo aplica a filas origen='manual':
+-- las de factura/rendición tienen sus propios adjuntos en su documento.
+-- Estos adjuntos son los que se anexan al PDF del movimiento (ver
+-- exportar._pdf_de_movimiento y GET /movimientos/{mid}/pdf en main.py).
+CREATE TABLE IF NOT EXISTS movimiento_adjuntos (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    movimiento_id  INTEGER NOT NULL,
+    nombre_archivo TEXT NOT NULL,            -- nombre original
+    path           TEXT NOT NULL,            -- ruta local del archivo guardado
+    creado_en      TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (movimiento_id) REFERENCES movimientos_cc(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_movimiento_adj ON movimiento_adjuntos(movimiento_id);
+
 -- Módulo 6 · Log de auditoría: registra fecha, hora y una descripción de cada
 -- operación relevante hecha en la app (crear/editar/eliminar), para poder
 -- reconstruir qué pasó si algo se borra por accidente (p. ej. una rendición).
@@ -1088,6 +1105,13 @@ def codigo_rendicion(rid: int) -> str:
     return f"R-{int(rid):04d}"
 
 
+def codigo_movimiento(mid: int) -> str:
+    """Código legible y único de un movimiento manual de Movimientos CC,
+    derivado de su id: M-0001. Mismo criterio que codigo_rendicion; se usa en
+    el PDF del movimiento y en el nombre del archivo."""
+    return f"M-{int(mid):04d}"
+
+
 def _prorratear(distrib: list[tuple[str, int]], total_doc: int, monto_pago: int) -> list[tuple[str, int]]:
     """Reparte `monto_pago` (un pago o cobro, puede ser parcial) entre los
     centros de `distrib` (lista de (centro, monto_del_documento_completo)),
@@ -1418,12 +1442,69 @@ def editar_movimiento_manual(conn: sqlite3.Connection, mid: int, fecha: str, flu
 
 
 def eliminar_movimiento_manual(conn: sqlite3.Connection, mid: int) -> bool:
-    """Solo borra si la fila es manual. Devuelve True si se borró algo."""
+    """Solo borra si la fila es manual. Devuelve True si se borró algo.
+
+    Los archivos en disco de sus adjuntos NO se borran acá: el llamador pide
+    antes las rutas con adjuntos_de_movimiento() y las elimina (ver
+    POST /movimientos/{mid}/eliminar en main.py)."""
     conn.execute("DELETE FROM movimiento_centros WHERE movimiento_id = ?", (mid,))
+    conn.execute("DELETE FROM movimiento_adjuntos WHERE movimiento_id = ?", (mid,))
     cur = conn.execute(
         "DELETE FROM movimientos_cc WHERE id = ? AND origen = 'manual'", (mid,)
     )
     return cur.rowcount > 0
+
+
+# --- Adjuntos de un movimiento manual -------------------------------------
+
+def adjuntos_de_movimiento(conn: sqlite3.Connection, mid: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, nombre_archivo, path FROM movimiento_adjuntos "
+        "WHERE movimiento_id = ? ORDER BY id ASC",
+        (mid,),
+    ).fetchall()
+
+
+def adjuntos_de_movimientos(conn: sqlite3.Connection,
+                            ids: list[int]) -> dict[int, list[sqlite3.Row]]:
+    """Adjuntos de varios movimientos manuales a la vez, agrupados por
+    movimiento_id (vacío para los que no tienen). Mismo criterio que
+    distribuciones_de_movimientos: pintar /movimientos sin una consulta por
+    fila."""
+    out: dict[int, list[sqlite3.Row]] = {}
+    if not ids:
+        return out
+    marcadores = ",".join("?" * len(ids))
+    for r in conn.execute(
+        f"SELECT movimiento_id, id, nombre_archivo, path FROM movimiento_adjuntos "
+        f"WHERE movimiento_id IN ({marcadores}) ORDER BY movimiento_id, id",
+        tuple(ids),
+    ).fetchall():
+        out.setdefault(r["movimiento_id"], []).append(r)
+    return out
+
+
+def agregar_adjunto_movimiento(conn: sqlite3.Connection, mid: int,
+                               nombre_archivo: str, path: str) -> None:
+    conn.execute(
+        "INSERT INTO movimiento_adjuntos (movimiento_id, nombre_archivo, path) "
+        "VALUES (?, ?, ?)",
+        (mid, nombre_archivo, path),
+    )
+
+
+def adjunto_movimiento_por_id(conn: sqlite3.Connection, adj_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT id, movimiento_id, nombre_archivo, path FROM movimiento_adjuntos "
+        "WHERE id = ?",
+        (adj_id,),
+    ).fetchone()
+
+
+def eliminar_adjunto_movimiento(conn: sqlite3.Connection, adj_id: int, mid: int) -> None:
+    conn.execute(
+        "DELETE FROM movimiento_adjuntos WHERE id = ? AND movimiento_id = ?", (adj_id, mid)
+    )
 
 
 def centros_de_movimiento(conn: sqlite3.Connection, movimiento_id: int) -> list[sqlite3.Row]:

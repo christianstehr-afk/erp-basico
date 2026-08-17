@@ -340,6 +340,19 @@ def _pagina_info(c, r, items, pagos) -> None:
     c.showPage()
 
 
+def _recortar_a_ancho(c, texto: str, fuente: str, tamano: int,
+                      ancho_max: float) -> tuple[str, bool]:
+    """Recorta `texto` (agregando "…") hasta que quepa en `ancho_max` con esa
+    fuente. Devuelve (texto_a_dibujar, se_recortó). Recortar por cantidad de
+    caracteres no sirve: el ancho real depende de qué letras sean."""
+    if c.stringWidth(texto, fuente, tamano) <= ancho_max:
+        return texto, False
+    recorte = texto
+    while recorte and c.stringWidth(recorte + "…", fuente, tamano) > ancho_max:
+        recorte = recorte[:-1]
+    return (recorte.rstrip() + "…"), True
+
+
 def _pagina_imagen(c, path: str, caption: str) -> None:
     """Dibuja una imagen ocupando la página (con leyenda)."""
     from reportlab.lib.pagesizes import A4
@@ -656,20 +669,180 @@ def construir_zip_rendiciones(rendiciones: list[dict]) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Módulo 5 · PDF de UN movimiento manual de Movimientos CC
+# ---------------------------------------------------------------------------
+
+def _pdf_de_movimiento(m, adjuntos, dist) -> bytes:
+    """Devuelve el PDF (bytes) de un movimiento MANUAL de Movimientos CC: una
+    ficha con fecha, tipo, descripción, monto y centro(s), más el listado de
+    sus adjuntos.
+
+    Los archivos adjuntos NO se anexan acá: el llamador lo hace con
+    `anexar_archivos` (mismo patrón que _pdf_de_gestion_pago), que ya sabe
+    dibujar las imágenes una por página y pegar los PDF tal cual. Ver
+    GET /movimientos/{mid}/pdf en main.py.
+
+    `m` es la fila de movimientos_cc, `dist` la distribución en varios centros
+    (vacía si el movimiento usa un centro único, ver movimiento_centros).
+    """
+    import textwrap
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+
+    from .db import codigo_movimiento
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    W, H = A4
+    mx = 20 * mm
+    y = H - 22 * mm
+
+    logo = _logo_reader()
+    if logo is not None:
+        try:
+            iw, ih = logo.getSize()
+            logo_h = 14 * mm
+            logo_w = logo_h * iw / ih
+            titulo_y = y - 9 * mm  # misma y donde se dibuja el título más abajo
+            c.drawImage(logo, W - mx - logo_w, titulo_y - 3 * mm, logo_w, logo_h,
+                        preserveAspectRatio=True, mask="auto")
+        except Exception:
+            pass  # un logo que no se pudo dibujar no debe tumbar el PDF
+
+    ingreso = (m["flujo"] or "") == "Ingreso"
+    descripcion = (m["descripcion"] or "").strip()
+
+    c.setFillColorRGB(0, 0.58, 0.023)  # verde e-auto
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(mx, y, f"E-AUTO · MOVIMIENTO CC {codigo_movimiento(m['id'])}")
+    y -= 9 * mm
+    c.setFillColorRGB(0.04, 0.04, 0.04)
+    c.setFont("Helvetica-Bold", 17)
+    # El título se recorta al ancho REAL disponible (dejando libre la zona del
+    # logo), no a un número fijo de caracteres: una descripción larga se
+    # saldría de la página. Si no cabe entera, más abajo va completa en el
+    # bloque "Descripción".
+    ancho_titulo = W - 2 * mx - 34 * mm
+    titulo, recortado = _recortar_a_ancho(
+        c, descripcion or "Movimiento manual", "Helvetica-Bold", 17, ancho_titulo)
+    c.drawString(mx, y, titulo)
+    y -= 7 * mm
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.setFont("Helvetica", 10)
+    c.drawString(mx, y, f"Fecha: {m['fecha']}    Origen: manual")
+    y -= 12 * mm
+
+    # Tipo y monto
+    c.setFont("Helvetica-Bold", 11)
+    if ingreso:
+        c.setFillColorRGB(0, 0.58, 0.023)
+    else:
+        c.setFillColorRGB(0.05, 0.4, 0.85)
+    c.drawString(mx, y, f"{m['flujo']}: ${_miles(m['monto'] or 0)}")
+    y -= 12 * mm
+
+    # Centro de resultado: distribuido en varios, o el centro simple.
+    c.setFillColorRGB(0.04, 0.04, 0.04)
+    c.setFont("Helvetica-Bold", 10)
+    if dist:
+        c.drawString(mx, y, "Centros")
+        y -= 6 * mm
+        c.setFont("Helvetica", 9)
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        for d in dist:
+            if y < 25 * mm:
+                c.showPage()
+                y = H - 22 * mm
+                c.setFont("Helvetica", 9)
+                c.setFillColorRGB(0.1, 0.1, 0.1)
+            c.drawString(mx, y, str(d["centro"])[:40])
+            c.drawRightString(W - mx, y, f"${_miles(d['monto'])}")
+            y -= 5.5 * mm
+        y -= 4 * mm
+    else:
+        c.drawString(mx, y, f"Centro: {m['centro_costo'] or 'Sin imputar'}"[:100])
+        y -= 10 * mm
+
+    # Descripción completa, solo si el título de arriba quedó recortado.
+    if descripcion and recortado:
+        c.setFillColorRGB(0.04, 0.04, 0.04)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(mx, y, "Descripción")
+        y -= 6 * mm
+        c.setFont("Helvetica", 9)
+        c.setFillColorRGB(0.15, 0.15, 0.15)
+        for linea in textwrap.wrap(descripcion, 105) or [""]:
+            if y < 25 * mm:
+                c.showPage()
+                y = H - 22 * mm
+                c.setFont("Helvetica", 9)
+                c.setFillColorRGB(0.15, 0.15, 0.15)
+            c.drawString(mx, y, linea)
+            y -= 5 * mm
+        y -= 6 * mm
+
+    # Adjuntos
+    if y < 40 * mm:
+        c.showPage()
+        y = H - 22 * mm
+    c.setFillColorRGB(0.04, 0.04, 0.04)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(mx, y, "Adjuntos")
+    y -= 6 * mm
+    c.setFont("Helvetica", 9)
+    if adjuntos:
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        for a in adjuntos:
+            if y < 20 * mm:
+                c.showPage()
+                y = H - 22 * mm
+                c.setFont("Helvetica", 9)
+                c.setFillColorRGB(0.1, 0.1, 0.1)
+            c.drawString(mx, y, f"· {a['nombre_archivo']}"[:105])
+            y -= 5.5 * mm
+        y -= 4 * mm
+        if y < 20 * mm:
+            c.showPage()
+            y = H - 22 * mm
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawString(mx, y, "— Adjuntos del movimiento a continuación —")
+    else:
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(mx, y, "Este movimiento no tiene adjuntos.")
+
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Módulo 5 · PDF del listado de Movimientos CC
 # ---------------------------------------------------------------------------
 
 _ORIGEN_LABEL = {"factura": "Factura", "rendicion": "Rendición", "manual": "Manual"}
 
 
-def _etiqueta_origen(m: dict) -> str:
+def _campo(m, nombre: str):
+    """Lee un campo de una fila que puede venir como dict o como sqlite3.Row
+    (movimientos_cc_en_rango devuelve Row, que no tiene .get()). None si el
+    campo no está."""
+    try:
+        return m[nombre]
+    except (KeyError, IndexError):
+        return None
+
+
+def _etiqueta_origen(m) -> str:
     """Etiqueta a mostrar en la columna ORIGEN. Las BTE y BHE se guardan
     internamente con origen='factura' (mismo tratamiento que una factura,
     ver sincronizar_movimientos_cc en db.py), pero en pantalla y en el PDF
     deben distinguirse por el prefijo de su código (ref)."""
-    origen = m.get("origen")
+    origen = _campo(m, "origen")
     if origen == "factura":
-        ref = m.get("ref") or ""
+        ref = _campo(m, "ref") or ""
         if ref.startswith("BTE-"):
             return "BTE"
         if ref.startswith("BHE-"):
@@ -839,11 +1012,13 @@ def _leeme_respaldo(fecha: str) -> str:
 
 def construir_respaldo_completo(db_bytes: bytes, adjuntos_dir: Path,
                                 adjuntos_facturas_dir: Path, code_dir: Path,
-                                fecha: str) -> bytes:
+                                fecha: str,
+                                adjuntos_movimientos_dir: Path | None = None) -> bytes:
     """Arma un .zip con TODO lo necesario para reconstruir la app desde cero
     frente a un desastre informático: la base de datos, los adjuntos
-    (rendiciones y gestión de pago de facturas) y una copia del código fuente
-    tal como está corriendo ahora mismo. Ver GET /respaldo en main.py (botón
+    (rendiciones, gestión de pago de facturas y movimientos manuales de
+    Movimientos CC) y una copia del código fuente tal como está corriendo
+    ahora mismo. Ver GET /respaldo en main.py (botón
     "Descargar Respaldo" del Cockpit).
 
     A propósito NO incluye los PDF de facturas/boletas del SII (pdf_store,
@@ -863,6 +1038,8 @@ def construir_respaldo_completo(db_bytes: bytes, adjuntos_dir: Path,
 
         _agregar_carpeta(adjuntos_dir, "Adjuntos/Rendiciones")
         _agregar_carpeta(adjuntos_facturas_dir, "Adjuntos/Facturas")
+        if adjuntos_movimientos_dir is not None:
+            _agregar_carpeta(adjuntos_movimientos_dir, "Adjuntos/Movimientos")
 
         if code_dir.exists():
             for p in code_dir.rglob("*"):
