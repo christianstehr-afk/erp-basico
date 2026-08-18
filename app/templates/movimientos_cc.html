@@ -85,9 +85,11 @@
         </div>
         <div>
           <label class="mcc-label">Tipo</label>
+          <!-- Egreso por defecto: la mayoría de los movimientos que se cargan
+               a mano acá son salidas de caja (comisiones, transferencias). -->
           <select name="flujo" required class="mcc-input">
             <option value="Ingreso">Ingreso</option>
-            <option value="Egreso">Egreso</option>
+            <option value="Egreso" selected>Egreso</option>
           </select>
         </div>
         <div style="flex:1;min-width:220px">
