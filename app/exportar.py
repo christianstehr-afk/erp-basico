@@ -247,16 +247,16 @@ def _pagina_info(c, r, items, pagos) -> None:
     mx = 20 * mm
     y = H - 22 * mm
 
-    # Logo: justificado a la derecha, a la misma altura del título (nombre),
-    # sin ocupar espacio en el flujo vertical del texto de la izquierda.
+    # Logo: justificado a la derecha, arriba del bloque de texto (eyebrow +
+    # título), no a la altura del título — si el título es largo y corre
+    # hacia la derecha, así no se cruza con el logo.
     logo = _logo_reader()
     if logo is not None:
         try:
             iw, ih = logo.getSize()
             logo_h = 14 * mm
             logo_w = logo_h * iw / ih
-            titulo_y = y - 9 * mm  # misma y donde se dibuja el título más abajo
-            c.drawImage(logo, W - mx - logo_w, titulo_y - 3 * mm, logo_w, logo_h,
+            c.drawImage(logo, W - mx - logo_w, y, logo_w, logo_h,
                         preserveAspectRatio=True, mask="auto")
         except Exception:
             pass  # un logo que no se pudo dibujar no debe tumbar el PDF
@@ -438,14 +438,16 @@ def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False,
     mx = 20 * mm
     y = H - 22 * mm
 
+    # Logo arriba del bloque de texto (eyebrow + título), no a la altura del
+    # título — si el título es largo y corre hacia la derecha, así no se
+    # cruza con el logo.
     logo = _logo_reader()
     if logo is not None:
         try:
             iw, ih = logo.getSize()
             logo_h = 14 * mm
             logo_w = logo_h * iw / ih
-            titulo_y = y - 9 * mm
-            c.drawImage(logo, W - mx - logo_w, titulo_y - 3 * mm, logo_w, logo_h,
+            c.drawImage(logo, W - mx - logo_w, y, logo_w, logo_h,
                         preserveAspectRatio=True, mask="auto")
         except Exception:
             pass

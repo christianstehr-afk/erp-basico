@@ -366,7 +366,7 @@
            en cada sync — ver comentario junto a OTRAS_EMPRESAS en sync.py) -->
       <section class="cockpit-panel wide">
         <div class="cockpit-phead">
-          <div class="eyebrow" style="color:var(--red)">Facturas recibidas Christian Stehr Servicios SpA y Christian Stehr Servicios Informáticos EIRL</div>
+          <div class="eyebrow">Facturas recibidas Christian Stehr Servicios SpA y Christian Stehr Servicios Informáticos EIRL</div>
           <span style="font-family:var(--mono);font-size:11px;color:var(--slate);white-space:nowrap">
             {% if otras_empresas_error %}
               <span style="color:var(--red)">⚠ SII no disponible · mostrando última información</span>
@@ -393,7 +393,7 @@
                 <td>{{ d['documento'] }}</td>
                 <td class="mono">{{ d['empresa_rut_fmt'] }}</td>
                 <td class="mono" data-value="{{ d['folio'] }}">
-                  <a class="folio-link" style="color:var(--red)" href="/otras-empresas/pdf/{{ d['empresa_rut'] }}/{{ d['codigo'] }}" target="_blank">{{ d['folio'] }}</a>
+                  <a class="folio-link" style="color:#3b82f6" href="/otras-empresas/pdf/{{ d['empresa_rut'] }}/{{ d['codigo'] }}" target="_blank">{{ d['folio'] }}</a>
                 </td>
                 <td class="mono" data-value="{{ d['fecha'] or '' }}">{{ d['fecha'] }}</td>
                 <td class="r" data-value="{{ d['monto'] }}">${{ "{:,.0f}".format(d['monto']).replace(",", ".") }}</td>
