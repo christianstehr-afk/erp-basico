@@ -458,6 +458,9 @@ def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False,
     saldo = total - pagado
     pagada = pagado >= total
     estado = "Rechazada" if rechazada else (cfg["estado_ok"] if pagada else "Pendiente")
+    # Boletas (honorarios BHE, terceros BTE) no son facturas: el rótulo del
+    # monto debe decir "boleta", no "factura" (pedido de Christian).
+    etiqueta_monto = "Monto boleta" if "boleta" in (f["documento"] or "").lower() else "Monto factura"
 
     c.setFillColorRGB(0, 0.58, 0.023)  # verde e-auto
     c.setFont("Helvetica-Bold", 9)
@@ -478,7 +481,7 @@ def _pdf_de_gestion_pago(f, pagos, cfg, incluye_original: bool = False,
     c.setFont("Helvetica-Bold", 11)
     c.drawString(
         mx, y,
-        f"Monto factura: ${_miles(total)}    {cfg['label_pagado']}: ${_miles(pagado)}    "
+        f"{etiqueta_monto}: ${_miles(total)}    {cfg['label_pagado']}: ${_miles(pagado)}    "
         f"Saldo: ${_miles(saldo)}",
     )
     y -= 7 * mm
