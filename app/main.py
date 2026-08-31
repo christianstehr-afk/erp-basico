@@ -2131,6 +2131,31 @@ def movimientos_pdf(request: Request, desde: str = "", hasta: str = ""):
     return Response(content=data, media_type="application/pdf")
 
 
+@app.get("/movimientos/excel")
+def movimientos_excel(request: Request, desde: str = "", hasta: str = ""):
+    """Excel del listado de Movimientos CC (botón "Ver Excel" de /movimientos):
+    exactamente el mismo contenido que /movimientos/pdf — mismo rango, mismas
+    filas y mismo orden (fecha descendente) — pero en .xlsx."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    try:
+        movs = db.movimientos_cc_en_rango(conn, d, h)
+    finally:
+        conn.close()
+    movs = list(reversed(movs))  # mismo orden que /movimientos y que el PDF
+    total_ing = sum(m["monto"] for m in movs if m["flujo"] == "Ingreso")
+    total_egr = sum(m["monto"] for m in movs if m["flujo"] == "Egreso")
+    data = exportar.construir_excel_movimientos_cc(movs, d, h, total_ing, total_egr)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="MovimientosCC_{d}_a_{h}.xlsx"'},
+    )
+
+
 @app.post("/movimientos/agregar")
 def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = Form(...),
                         descripcion: str = Form(...), monto: str = Form(...),

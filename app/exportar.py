@@ -975,6 +975,93 @@ def construir_pdf_movimientos_cc(movs: list, desde: str, hasta: str,
     return buf.getvalue()
 
 
+
+def construir_excel_movimientos_cc(movs: list, desde: str, hasta: str,
+                                   total_ingresos: int, total_egresos: int) -> bytes:
+    """.xlsx del listado de Movimientos CC (botón "Ver Excel" de /movimientos).
+
+    Es el gemelo de construir_pdf_movimientos_cc: mismas filas, mismo orden y
+    mismas columnas (Fecha · Tipo · Descripción · Centro · Monto · Origen), con
+    el mismo encabezado de rango y totales. Si se cambia una, hay que cambiar
+    la otra. A diferencia del PDF, acá la descripción y el centro NO se cortan
+    (en Excel no hay ancho de página que respetar) y el monto va como número,
+    para poder sumar y filtrar en la planilla.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Movimientos CC"
+
+    verde = "FF009406"
+    azul = "FF3B82F6"   # Egreso: mismo azul que el PDF y la pantalla
+    tinta = "FF0A0A0A"
+    gris = "FFF2F2F2"
+
+    ws["A1"] = "Movimientos CC"
+    ws["A1"].font = Font(name="Calibri", size=14, bold=True, color=tinta)
+    ws["A2"] = f"Del {desde} al {hasta}"
+    ws["A2"].font = Font(name="Calibri", size=10, color="FF666666")
+
+    encabezados = ["Fecha", "Tipo", "Descripción", "Centro", "Monto", "Origen"]
+    fila_head = 4
+    borde = Border(bottom=Side(style="thin", color="FFDDDDDD"))
+    for col, texto in enumerate(encabezados, start=1):
+        c = ws.cell(row=fila_head, column=col, value=texto)
+        c.font = Font(bold=True, color="FFFFFFFF")
+        c.fill = PatternFill("solid", fgColor=tinta)
+        c.alignment = Alignment(horizontal="right" if texto == "Monto" else "left")
+
+    fila = fila_head + 1
+    for m in movs:
+        es_ing = _campo(m, "flujo") == "Ingreso"
+        color = verde if es_ing else azul
+        ws.cell(row=fila, column=1, value=_campo(m, "fecha") or "").font = Font(color=color)
+        ws.cell(row=fila, column=2, value=_campo(m, "flujo") or "").font = Font(bold=True, color=color)
+        ws.cell(row=fila, column=3, value=_campo(m, "descripcion") or "")
+        ws.cell(row=fila, column=4, value=_campo(m, "centro") or "")
+        cmonto = ws.cell(row=fila, column=5, value=_campo(m, "monto") or 0)
+        cmonto.number_format = '"$"#,##0'
+        cmonto.alignment = Alignment(horizontal="right")
+        cmonto.font = Font(color=color)
+        corigen = ws.cell(row=fila, column=6, value=_etiqueta_origen(m))
+        corigen.font = Font(color="FF808080")
+        for col in range(1, 7):
+            ws.cell(row=fila, column=col).border = borde
+        fila += 1
+
+    if not movs:
+        c = ws.cell(row=fila, column=1, value="No hay movimientos registrados en este rango.")
+        c.font = Font(color="FF666666")
+        fila += 1
+
+    # Totales: los mismos tres números del encabezado del PDF.
+    fila += 1
+    neto = (total_ingresos or 0) - (total_egresos or 0)
+    for etiqueta, valor, color in (("Total ingresos", total_ingresos or 0, verde),
+                                   ("Total egresos", total_egresos or 0, azul),
+                                   ("Neto (ingresos − egresos)", neto, tinta)):
+        ws.cell(row=fila, column=4, value=etiqueta).font = Font(bold=True, color=color)
+        c = ws.cell(row=fila, column=5, value=valor)
+        c.number_format = '"$"#,##0'
+        c.font = Font(bold=True, color=color)
+        c.alignment = Alignment(horizontal="right")
+        if color == tinta:  # la fila del neto va resaltada
+            ws.cell(row=fila, column=4).fill = PatternFill("solid", fgColor=gris)
+            ws.cell(row=fila, column=5).fill = PatternFill("solid", fgColor=gris)
+        fila += 1
+
+    for col, w in {1: 13, 2: 11, 3: 62, 4: 26, 5: 16, 6: 12}.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
+    ws.freeze_panes = "A5"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 # Carpetas/archivos que nunca deben ir en el respaldo de código, aunque
 # aparezcan bajo code_dir en un entorno local (en Railway ni siquiera existen,
 # ver .dockerignore): son datos, entornos o carpetas de trabajo de Christian,
