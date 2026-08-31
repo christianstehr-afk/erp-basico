@@ -10,3 +10,9 @@ data/
 *.sqlite3
 .env
 .env.*
+
+# Respaldos y logs locales: no van a la imagen
+Respaldos/
+Log/
+temp/
+_to_delete/

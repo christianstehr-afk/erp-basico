@@ -81,7 +81,7 @@
         <input type="hidden" name="hasta" value="{{ hasta }}">
         <div>
           <label class="mcc-label">Fecha</label>
-          <input type="date" name="fecha" value="{{ hoy }}" required class="mcc-input" max="{{ hasta if hasta else '' }}">
+          <input type="date" name="fecha" value="{{ hoy }}" required class="mcc-input" max="{{ fecha_max }}">
         </div>
         <div>
           <label class="mcc-label">Tipo</label>
@@ -255,7 +255,7 @@
                 <input type="hidden" name="hasta" value="{{ hasta }}">
                 <div>
                   <label class="mcc-label">Fecha</label>
-                  <input type="date" name="fecha" value="{{ m['fecha'] }}" required class="mcc-input">
+                  <input type="date" name="fecha" value="{{ m['fecha'] }}" required class="mcc-input" max="{{ fecha_max }}">
                 </div>
                 <div>
                   <label class="mcc-label">Tipo</label>

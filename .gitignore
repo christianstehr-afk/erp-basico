@@ -16,3 +16,12 @@ data/
 
 # Sistema
 .DS_Store
+
+# Respaldos y logs generados por la app (pesados; GitHub rechaza >100 MB).
+# Se quedan en tu Mac, no en el repo. La app crea las carpetas sola.
+Respaldos/
+Log/
+temp/
+
+# Carpeta de descarte del sandbox
+_to_delete/

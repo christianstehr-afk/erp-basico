@@ -11,7 +11,7 @@ import os
 import re
 import secrets
 import shutil
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -85,6 +85,20 @@ SII_SESSIONS: dict[str, SIIClient] = {}
 # falla, sencillamente no hay entrada acá para ese sid y las boletas no se
 # sincronizan (no bloquea el resto de la app).
 SII_SESSIONS_BHE: dict[str, SIIClient] = {}
+
+
+# Tope de fecha para registrar pagos y movimientos de caja: MAÑANA, no hoy.
+# Motivo: en las cartolas de la tarde el banco registra el movimiento con la
+# fecha del día siguiente, así que hay que poder cargar en el ERP esa misma
+# fecha. Se usa en pago a proveedores/ingresos, pagos de rendiciones y
+# movimientos manuales de Movimientos CC (y como `max` de los <input type=date>
+# de esas plantillas, vía `fecha_max` en el contexto).
+def _fecha_max_pago() -> date:
+    return date.today() + timedelta(days=1)
+
+
+def _fecha_max_pago_iso() -> str:
+    return _fecha_max_pago().isoformat()
 
 
 @app.on_event("startup")
@@ -1010,7 +1024,8 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
             "request": request, "rut": client.rut, "anio": ANIO,
             "seccion": seccion, "cfg": cfg, "f": f, "pagos": pagos,
             "adjuntos": adjuntos,
-            "hoy": date.today().isoformat(), "saldo": (f["total"] - f["pagado"]),
+            "hoy": date.today().isoformat(), "fecha_max": _fecha_max_pago_iso(),
+            "saldo": (f["total"] - f["pagado"]),
             "error": error, "rendiciones": rendiciones, "rend_asociada": rend_asociada,
             "movs_manuales": movs_manuales,
             # Catálogo de centros según la sección: proveedores imputa GASTOS,
@@ -1210,9 +1225,9 @@ def _agregar_movimiento(request: Request, seccion: str, codigo: str,
     except ValueError:
         return _render_detalle(request, client, seccion, codigo,
                                error="Fecha inválida.", status_code=400)
-    if f_mov > date.today():
+    if f_mov > _fecha_max_pago():
         return _render_detalle(request, client, seccion, codigo,
-                               error="No se permiten fechas futuras.", status_code=400)
+                               error="No se permiten fechas posteriores a mañana.", status_code=400)
 
     conn = db.get_conn()
     try:
@@ -1658,6 +1673,7 @@ def _render_rendicion(request: Request, client, rid: int,
         {
             "request": request, "rut": client.rut, "r": r, "items": items,
             "adjuntos": adjuntos, "pagos": pagos, "hoy": date.today().isoformat(),
+            "fecha_max": _fecha_max_pago_iso(),
             "saldo": (r["total"] - r["pagado"]), "error": error,
             "centros_grupos": centros.grupos("gasto"),
         },
@@ -1872,9 +1888,9 @@ def rendicion_agregar_pago(request: Request, rid: int,
     except ValueError:
         return _render_rendicion(request, client, rid,
                                  error="Fecha inválida.", status_code=400)
-    if f_pago > date.today():
+    if f_pago > _fecha_max_pago():
         return _render_rendicion(request, client, rid,
-                                 error="No se permiten fechas futuras.", status_code=400)
+                                 error="No se permiten fechas posteriores a mañana.", status_code=400)
     conn = db.get_conn()
     try:
         r = db.rendicion_por_id(conn, rid)
@@ -2082,6 +2098,7 @@ def movimientos_lista(request: Request, desde: str = "", hasta: str = "",
         {
             "request": request, "rut": client.rut,
             "desde": d, "hasta": h, "movs": movs, "hoy": date.today().isoformat(),
+            "fecha_max": _fecha_max_pago_iso(),
             "total_ingresos": total_ing, "total_egresos": total_egr,
             "neto": total_ing - total_egr, "error": error or None,
             # Ambos catálogos: el JS de la plantilla muestra el que corresponde
@@ -2148,8 +2165,8 @@ def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = F
         f_mov = date.fromisoformat(fecha)
     except ValueError:
         return _error("Fecha inválida.")
-    if f_mov > date.today():
-        return _error("No se permiten fechas futuras.")
+    if f_mov > _fecha_max_pago():
+        return _error("No se permiten fechas posteriores a mañana.")
 
     # Centro: un solo centro (form simple), o distribuido en 2+ (mismo patrón
     # que la distribución de facturas en pago a proveedores/ingresos, ver
@@ -2230,8 +2247,8 @@ def movimientos_editar(request: Request, mid: int, fecha: str = Form(...),
         f_mov = date.fromisoformat(fecha)
     except ValueError:
         return _error("Fecha inválida.")
-    if f_mov > date.today():
-        return _error("No se permiten fechas futuras.")
+    if f_mov > _fecha_max_pago():
+        return _error("No se permiten fechas posteriores a mañana.")
 
     # Igual que en /movimientos/agregar: centro único, o distribuido en 2+
     # (ver _guardar_distribucion para facturas). Guardar un centro único
