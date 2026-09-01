@@ -74,6 +74,9 @@
                  {% if solo_pendientes %}checked{% endif %} onchange="this.form.submit()">
           Sólo Pendientes
         </label>
+        <a href="/pagos/{{ seccion }}/excel?desde={{ desde }}&amp;hasta={{ hasta }}{% if solo_pendientes %}&amp;pendientes=1{% endif %}"
+           class="pgl-link-btn"
+           title="Excel con las facturas de esta lista, con las mismas columnas de la tabla">Ver Excel</a>
         <a href="/pagos/{{ seccion }}/zip?desde={{ desde }}&amp;hasta={{ hasta }}{% if solo_pendientes %}&amp;pendientes=1{% endif %}"
            class="pgl-link-btn"
            title="ZIP con el PDF de gestión de cada factura de esta lista (factura, pagos parciales y adjuntos). Puede demorar.">Descargar</a>

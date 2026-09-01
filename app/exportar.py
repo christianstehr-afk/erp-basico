@@ -824,6 +824,127 @@ def _pdf_de_movimiento(m, adjuntos, dist) -> bytes:
 
 
 
+
+def construir_excel_pagos(filas: list, cfg: dict, desde: str, hasta: str,
+                          solo_pendientes: bool = False) -> bytes:
+    """.xlsx del listado de Pago a proveedores / Ingresos (botón "Ver Excel").
+
+    Es el gemelo de la tabla en pantalla (pagos_lista.html): mismas filas, mismo
+    orden y mismas columnas, incluido el mismo criterio de la columna "Fecha
+    tope/pago" (en proveedores, si la factura está pagada se muestra la fecha
+    del pago que la completó) y el mismo texto de la columna Estado.
+
+    Las anuladas por nota de crédito van con Monto y Saldo en blanco —en
+    pantalla salen como "---"— para que no ensucien las sumas de la planilla;
+    la columna Estado deja claro por qué.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = cfg["titulo"][:31]
+
+    verde = "FF009406"
+    azul = "FF3B82F6"    # Pendiente: mismo azul que la pantalla
+    rojo = "FFC0392B"
+    tinta = "FF0A0A0A"
+    gris = "FFF2F2F2"
+
+    ws["A1"] = cfg["titulo"]
+    ws["A1"].font = Font(name="Calibri", size=14, bold=True, color=tinta)
+    ws["A2"] = (f"Facturas del {desde} al {hasta}"
+                + (" · solo pendientes" if solo_pendientes else ""))
+    ws["A2"].font = Font(name="Calibri", size=10, color="FF666666")
+
+    encabezados = ["Documento", "Folio", cfg["col_contraparte"], "RUT", "Descripción",
+                   "Centro", "Fecha factura", "Fecha tope/pago", "Monto",
+                   cfg["label_deuda"], "Estado"]
+    col_monto, col_saldo = 9, 10
+    fila_head = 4
+    borde = Border(bottom=Side(style="thin", color="FFDDDDDD"))
+    for col, texto in enumerate(encabezados, start=1):
+        c = ws.cell(row=fila_head, column=col, value=texto)
+        c.font = Font(bold=True, color="FFFFFFFF")
+        c.fill = PatternFill("solid", fgColor=tinta)
+        c.alignment = Alignment(horizontal="right" if col in (col_monto, col_saldo) else "left")
+
+    total_monto = 0
+    total_pendiente = 0
+    fila = fila_head + 1
+    for f in filas:
+        rechazada = bool(f["fecha_reclamo"])
+        anulada = bool(f["anulada_por"])
+        pagada = f["pagado"] >= f["total"]
+        if rechazada:
+            estado, color = "Rechazada", rojo
+        elif anulada:
+            estado, color = "Anulada", verde
+        elif pagada:
+            estado, color = cfg["estado_ok"], verde
+        else:
+            estado, color = "Pendiente", azul
+        # Mismo criterio que la plantilla: en proveedores, una factura pagada
+        # muestra la fecha en que se completó el pago.
+        fecha_tope = (f["fecha_pago_completo"]
+                      if (cfg["accion"] == "pago" and pagada and f["fecha_pago_completo"])
+                      else f["fecha_pago_tope"])
+        ws.cell(row=fila, column=1, value=f["documento"] or "")
+        ws.cell(row=fila, column=2, value=f["folio"])
+        ws.cell(row=fila, column=3, value=f["razon_social"] or "")
+        ws.cell(row=fila, column=4, value=f["rut_contraparte"] or "")
+        ws.cell(row=fila, column=5, value=f["descripcion"] or "")
+        ws.cell(row=fila, column=6, value=f["centro_multi"] or f["centro_costo"] or "")
+        ws.cell(row=fila, column=7, value=f["fecha_emision"] or "")
+        ws.cell(row=fila, column=8, value=fecha_tope or "")
+        if not anulada:
+            saldo = f["total"] - f["pagado"]
+            cm = ws.cell(row=fila, column=col_monto, value=f["total"])
+            cs = ws.cell(row=fila, column=col_saldo, value=saldo)
+            for c in (cm, cs):
+                c.number_format = '"$"#,##0'
+                c.alignment = Alignment(horizontal="right")
+            cs.font = Font(color=color)
+            if not rechazada:
+                total_monto += f["total"]
+                total_pendiente += max(saldo, 0)
+        ce = ws.cell(row=fila, column=11, value=estado)
+        ce.font = Font(bold=True, color=color)
+        for col in range(1, len(encabezados) + 1):
+            ws.cell(row=fila, column=col).border = borde
+        fila += 1
+
+    if not filas:
+        ws.cell(row=fila, column=1,
+                value="No hay facturas en este rango.").font = Font(color="FF666666")
+        fila += 1
+
+    # Totales: los mismos del encabezado de la pantalla (ignoran rechazadas y
+    # anuladas, que no se van a cobrar/pagar).
+    fila += 1
+    for etiqueta, valor, color in ((f"Total {'facturado' if cfg['accion'] == 'cobro' else 'a pagar'}",
+                                    total_monto, tinta),
+                                   (f"Pendiente de {cfg['accion']}", total_pendiente, azul)):
+        ws.cell(row=fila, column=8, value=etiqueta).font = Font(bold=True, color=color)
+        c = ws.cell(row=fila, column=col_monto, value=valor)
+        c.number_format = '"$"#,##0'
+        c.font = Font(bold=True, color=color)
+        c.alignment = Alignment(horizontal="right")
+        ws.cell(row=fila, column=8).fill = PatternFill("solid", fgColor=gris)
+        ws.cell(row=fila, column=col_monto).fill = PatternFill("solid", fgColor=gris)
+        fila += 1
+
+    anchos = {1: 24, 2: 10, 3: 32, 4: 15, 5: 42, 6: 22, 7: 14, 8: 16, 9: 15, 10: 15, 11: 13}
+    for col, w in anchos.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
+    ws.freeze_panes = "A5"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def construir_zip_gestiones(docs: list[tuple[str, bytes]],
                             errores: list[str] | None = None) -> bytes:
     """Empaqueta en un .zip los PDF de gestión ya armados (botón "Descargar"

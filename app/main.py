@@ -1137,6 +1137,32 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
     return Response(content=data, media_type="application/pdf")
 
 
+def _excel_lista(request: Request, seccion: str, desde: str, hasta: str,
+                 pendientes: str = ""):
+    """Excel del listado de Pago a proveedores / Ingresos (botón "Ver Excel"):
+    las mismas filas que se están viendo —mismo rango y mismo check "Sólo
+    Pendientes"— con las columnas de la tabla en pantalla."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    cfg = SECCIONES[seccion]
+    solo_pendientes = bool((pendientes or "").strip())
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    try:
+        filas = _filas_de_lista(conn, seccion, d, h, solo_pendientes)
+    finally:
+        conn.close()
+    data = exportar.construir_excel_pagos(filas, cfg, d, h, solo_pendientes)
+    sufijo = "_pendientes" if solo_pendientes else ""
+    nombre = f"{cfg['titulo'].replace(' ', '_')}_{d}_a_{h}{sufijo}.xlsx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
 def _zip_gestiones(request: Request, seccion: str, desde: str, hasta: str,
                    pendientes: str = ""):
     """ZIP con el PDF de gestión de cada factura de la lista (botón
@@ -1521,6 +1547,11 @@ def proveedores_lista(request: Request, desde: str = "", hasta: str = "", volver
     return _vista_lista(request, "proveedores", desde, hasta, volver, pendientes)
 
 
+@app.get("/pagos/proveedores/excel")
+def proveedores_excel(request: Request, desde: str = "", hasta: str = "", pendientes: str = ""):
+    return _excel_lista(request, "proveedores", desde, hasta, pendientes)
+
+
 @app.get("/pagos/proveedores/zip")
 def proveedores_zip(request: Request, desde: str = "", hasta: str = "", pendientes: str = ""):
     return _zip_gestiones(request, "proveedores", desde, hasta, pendientes)
@@ -1607,6 +1638,11 @@ def proveedores_eliminar_adjunto(request: Request, codigo: str, adj_id: int):
 def ingresos_lista(request: Request, desde: str = "", hasta: str = "", volver: str = "",
                    pendientes: str = ""):
     return _vista_lista(request, "ingresos", desde, hasta, volver, pendientes)
+
+
+@app.get("/pagos/ingresos/excel")
+def ingresos_excel(request: Request, desde: str = "", hasta: str = "", pendientes: str = ""):
+    return _excel_lista(request, "ingresos", desde, hasta, pendientes)
 
 
 @app.get("/pagos/ingresos/zip")
