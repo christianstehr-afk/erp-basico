@@ -1922,23 +1922,32 @@ async def rendicion_nueva_crear(
     return RedirectResponse(f"/pagos/rendiciones/{rid}", status_code=303)
 
 
+def _pdf_rendicion_bytes(rid: int) -> bytes | None:
+    """PDF de una rendición en bytes (ficha + ítems + pagos + adjuntos). None si
+    no existe. Lo usan el link "Rendición" de la lista y el ZIP de Movimientos
+    CC, para que ambos entreguen el mismo documento."""
+    conn = db.get_conn()
+    try:
+        r = db.rendicion_por_id(conn, rid)
+        if not r:
+            return None
+        items = db.items_de_rendicion(conn, rid)
+        adjuntos = db.adjuntos_de_rendicion(conn, rid)
+        pagos = db.pagos_de_rendicion(conn, rid)
+    finally:
+        conn.close()
+    return exportar._pdf_de_rendicion(r, items, adjuntos, pagos)
+
+
 @app.get("/pagos/rendiciones/{rid}/pdf")
 def rendicion_pdf(request: Request, rid: int):
     """Devuelve el PDF de una sola rendición (inline, para abrirlo en el navegador)."""
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
-    conn = db.get_conn()
-    try:
-        r = db.rendicion_por_id(conn, rid)
-        if not r:
-            return HTMLResponse("<p>Rendición no encontrada.</p>", status_code=404)
-        items = db.items_de_rendicion(conn, rid)
-        adjuntos = db.adjuntos_de_rendicion(conn, rid)
-        pagos = db.pagos_de_rendicion(conn, rid)
-    finally:
-        conn.close()
-    data = exportar._pdf_de_rendicion(r, items, adjuntos, pagos)
+    data = _pdf_rendicion_bytes(rid)
+    if data is None:
+        return HTMLResponse("<p>Rendición no encontrada.</p>", status_code=404)
     return Response(content=data, media_type="application/pdf")
 
 
@@ -2260,6 +2269,89 @@ def movimientos_excel(request: Request, desde: str = "", hasta: str = ""):
     )
 
 
+@app.get("/movimientos/zip")
+def movimientos_zip(request: Request, desde: str = "", hasta: str = ""):
+    """ZIP con el PDF de cada movimiento de la lista (botón "Descargar" de
+    Movimientos CC).
+
+    Baja exactamente el documento que abre la columna ORIGEN de cada fila, en
+    el mismo rango y el mismo orden que se ve en pantalla:
+      · Factura/BTE/BHE → el PDF de gestión del cobro/pago (resumen, parciales,
+        documento original y adjuntos), Ingresos o Pago a proveedores según el
+        flujo del movimiento;
+      · Rendición       → el PDF de la rendición (ítems, pagos y adjuntos);
+      · Manual          → la ficha del movimiento con sus adjuntos.
+
+    Varios movimientos pueden apuntar al mismo documento (pagos parciales de
+    una misma factura, o de una misma rendición): ese PDF entra UNA sola vez.
+
+    Ojo: la primera vez puede demorar, porque de las facturas sin copia local
+    hay que bajar el original del SII (después queda cacheado).
+    """
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    try:
+        movs = db.movimientos_cc_en_rango(conn, d, h)
+    finally:
+        conn.close()
+    movs = list(reversed(movs))  # mismo orden que /movimientos, el PDF y el Excel
+
+    docs: list[tuple[str, bytes]] = []
+    errores: list[str] = []
+    vistos: set[tuple] = set()
+    for m in movs:
+        origen = m["origen"]
+        ref = (m["ref"] or "") if origen == "factura" else ""
+        rid = m["rendicion_id"] if origen == "rendicion" else None
+        fecha = m["fecha"] or "sin-fecha"
+        seccion = "ingresos" if m["flujo"] == "Ingreso" else "proveedores"
+        if origen == "factura" and ref:
+            etiqueta = ("BTE" if ref.startswith("BTE-")
+                        else "BHE" if ref.startswith("BHE-") else "Factura")
+            clave = ("factura", seccion, ref)
+            nombre = f"{fecha}_{etiqueta}_{ref}"
+        elif origen == "rendicion" and rid:
+            clave = ("rendicion", rid)
+            nombre = f"{fecha}_Rendicion_{db.codigo_rendicion(rid)}"
+        elif origen == "manual":
+            clave = ("manual", m["id"])
+            nombre = f"{fecha}_Manual_{db.codigo_movimiento(m['id'])}"
+        else:
+            # Movimiento de factura/rendición sin referencia: no hay documento
+            # que bajar (en pantalla tampoco tiene link).
+            continue
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        descripcion = (m["descripcion"] or "")[:60]
+        try:
+            if clave[0] == "factura":
+                data = _pdf_gestion_bytes(request, client, seccion, ref)
+            elif clave[0] == "rendicion":
+                data = _pdf_rendicion_bytes(rid)
+            else:
+                data = _pdf_movimiento_bytes(m["id"])
+        except Exception as e:  # un documento malo no puede tumbar el ZIP entero
+            data = None
+            errores.append(f"{fecha} · {descripcion}: {e}")
+        if data is None:
+            errores.append(f"{fecha} · {descripcion}: no se pudo generar")
+            continue
+        docs.append((nombre, data))
+
+    zip_bytes = exportar.construir_zip_gestiones(docs, errores)
+    nombre_zip = f"MovimientosCC_{d}_a_{h}.zip"
+    _log_evento(request, f"Descarga ZIP de Movimientos CC · {d} a {h} · {len(docs)} PDF")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{nombre_zip}"'},
+    )
+
+
 @app.post("/movimientos/agregar")
 def movimientos_agregar(request: Request, fecha: str = Form(...), flujo: str = Form(...),
                         descripcion: str = Form(...), monto: str = Form(...),
@@ -2453,6 +2545,24 @@ def movimientos_eliminar(request: Request, mid: int, desde: str = Form(""), hast
     return RedirectResponse(f"/movimientos?desde={d}&hasta={h}", status_code=303)
 
 
+def _pdf_movimiento_bytes(mid: int) -> bytes | None:
+    """PDF de UN movimiento manual en bytes: la ficha + sus adjuntos anexados.
+    None si el movimiento no existe o no es manual (los de factura/rendición
+    tienen su propio PDF). Lo usan la etiqueta "Manual" de la columna ORIGEN y
+    el ZIP del botón "Descargar"."""
+    conn = db.get_conn()
+    try:
+        m = db.movimiento_cc_por_id(conn, mid)
+        if not m or m["origen"] != "manual":
+            return None
+        adjuntos = [dict(a) for a in db.adjuntos_de_movimiento(conn, mid)]
+        dist = db.centros_de_movimiento(conn, mid)
+    finally:
+        conn.close()
+    data = exportar._pdf_de_movimiento(m, adjuntos, dist)
+    return exportar.anexar_archivos(data, adjuntos)
+
+
 @app.get("/movimientos/{mid}/pdf")
 def movimiento_pdf(request: Request, mid: int):
     """PDF de UN movimiento manual de Movimientos CC (link en la etiqueta
@@ -2462,21 +2572,11 @@ def movimiento_pdf(request: Request, mid: int):
     de la app."""
     if not _guard(request):
         return RedirectResponse("/", status_code=303)
-    conn = db.get_conn()
-    try:
-        m = db.movimiento_cc_por_id(conn, mid)
-        if not m:
-            return HTMLResponse("<p>Movimiento no encontrado.</p>", status_code=404)
-        if m["origen"] != "manual":
-            return HTMLResponse(
-                "<p>Ese movimiento no es manual: su PDF se descarga desde su "
-                "factura o rendición.</p>", status_code=404)
-        adjuntos = [dict(a) for a in db.adjuntos_de_movimiento(conn, mid)]
-        dist = db.centros_de_movimiento(conn, mid)
-    finally:
-        conn.close()
-    data = exportar._pdf_de_movimiento(m, adjuntos, dist)
-    data = exportar.anexar_archivos(data, adjuntos)
+    data = _pdf_movimiento_bytes(mid)
+    if data is None:
+        return HTMLResponse("<p>Movimiento no encontrado, o no es manual: su PDF "
+                            "se descarga desde su factura o rendición.</p>",
+                            status_code=404)
     nombre = f"Movimiento_{db.codigo_movimiento(mid)}.pdf"
     return Response(
         content=data, media_type="application/pdf",
