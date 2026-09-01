@@ -823,6 +823,34 @@ def _pdf_de_movimiento(m, adjuntos, dist) -> bytes:
     return buf.getvalue()
 
 
+
+def construir_zip_gestiones(docs: list[tuple[str, bytes]],
+                            errores: list[str] | None = None) -> bytes:
+    """Empaqueta en un .zip los PDF de gestión ya armados (botón "Descargar"
+    de Pago a proveedores / Ingresos).
+
+    `docs` es una lista de (nombre_base_sin_extension, pdf_bytes) en el orden
+    en que se quieren dentro del zip; los nombres se sanean y se desduplican
+    acá. Si alguna factura no pudo generarse, `errores` deja constancia en un
+    _errores.txt adentro del zip: es preferible entregar el resto de los PDF
+    con una nota, a fallar el archivo completo.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        usados: set[str] = set()
+        for base, pdf in docs:
+            nombre = _nombre_archivo(base, ".pdf")
+            n = 2
+            while nombre in usados:
+                nombre = _nombre_archivo(f"{base}_{n}", ".pdf")
+                n += 1
+            usados.add(nombre)
+            zf.writestr(nombre, pdf)
+        if errores:
+            zf.writestr("_errores.txt",
+                        "No se pudo generar el PDF de:\n\n" + "\n".join(errores) + "\n")
+    return buf.getvalue()
+
 # ---------------------------------------------------------------------------
 # Módulo 5 · PDF del listado de Movimientos CC
 # ---------------------------------------------------------------------------

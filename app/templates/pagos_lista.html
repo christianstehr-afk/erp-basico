@@ -16,6 +16,9 @@
     .pgl-input{background:#111;border:1px solid #262626;color:var(--snow);padding:10px 12px;border-radius:var(--radius);font-size:14px;font-family:var(--mono)}
     .pgl-label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:6px}
     .pgl-btn{background:var(--green);color:#fff;border:none;padding:11px 20px;border-radius:var(--radius);font-weight:700;font-size:13px;cursor:pointer}
+    .pgl-link-btn{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:11px 20px;border:1px solid #2b2b2b;border-radius:var(--radius);color:var(--green);font-weight:700;background:none;cursor:pointer}
+    .pgl-check{display:flex;align-items:center;gap:8px;padding:11px 14px;border:1px solid #262626;border-radius:var(--radius);background:#111;color:var(--mist);font-size:13px;cursor:pointer;user-select:none}
+    .pgl-check input{accent-color:var(--green);width:15px;height:15px;cursor:pointer}
   </style>
 </head>
 <body>
@@ -64,6 +67,16 @@
           <input type="date" name="hasta" value="{{ hasta }}" required class="pgl-input">
         </div>
         <button type="submit" class="pgl-btn">Ver</button>
+        <!-- Filtra en el servidor (no esconde filas con JS) para que el ZIP de
+             "Descargar" y los totales del encabezado calcen con lo que se ve. -->
+        <label class="pgl-check" title="Muestra solo las facturas con saldo por {{ 'cobrar' if seccion == 'ingresos' else 'pagar' }}">
+          <input type="checkbox" name="pendientes" value="1"
+                 {% if solo_pendientes %}checked{% endif %} onchange="this.form.submit()">
+          Sólo Pendientes
+        </label>
+        <a href="/pagos/{{ seccion }}/zip?desde={{ desde }}&amp;hasta={{ hasta }}{% if solo_pendientes %}&amp;pendientes=1{% endif %}"
+           class="pgl-link-btn"
+           title="ZIP con el PDF de gestión de cada factura de esta lista (factura, pagos parciales y adjuntos). Puede demorar.">Descargar</a>
       </form>
     </div>
 

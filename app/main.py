@@ -950,27 +950,49 @@ def pagos_home(request: Request):
     return templates.TemplateResponse("pagos.html", {"request": request, "rut": client.rut})
 
 
+def _es_pendiente(f) -> bool:
+    """Mismo criterio que el badge "Pendiente" de la columna Estado en
+    pagos_lista.html: vigente (ni rechazada ni anulada) y con saldo por
+    cobrar/pagar. Lo comparten el filtro "Sólo Pendientes" de la lista y el
+    ZIP del botón "Descargar", para que bajen exactamente las que se ven."""
+    return (not f["fecha_reclamo"] and not f["anulada_por"]
+            and f["pagado"] < f["total"])
+
+
+def _filas_de_lista(conn, seccion: str, d: str, h: str, solo_pendientes: bool) -> list:
+    """Las filas que muestra la lista de pagos, ya filtradas. Una sola fuente
+    para la pantalla y para el ZIP."""
+    filas = db.facturas_con_pago_en_rango(conn, tipo=SECCIONES[seccion]["tipo"],
+                                          desde=d, hasta=h)
+    return [f for f in filas if _es_pendiente(f)] if solo_pendientes else filas
+
+
 def _vista_lista(request: Request, seccion: str, desde: str = "", hasta: str = "",
-                 volver: str = ""):
+                 volver: str = "", pendientes: str = ""):
     client = _guard(request)
     if not client:
         return RedirectResponse("/", status_code=303)
     cfg = SECCIONES[seccion]
+    solo_pendientes = bool((pendientes or "").strip())
     # Memoria del filtro: al volver desde "Gestionar" (?volver=1) se restaura
-    # el rango con que se estaba mirando la lista. Entrar directo (Cockpit)
-    # llega sin `volver` y usa el default de siempre: el mes en curso.
+    # el rango (y el check "Sólo Pendientes") con que se estaba mirando la
+    # lista. Entrar directo (Cockpit) llega sin `volver` y usa el default de
+    # siempre: el mes en curso, sin filtrar.
     clave_filtro = f"filtro_pagos_{seccion}"
     if (volver or "").strip() and not (desde.strip() or hasta.strip()):
         guardado = request.session.get(clave_filtro) or []
-        if isinstance(guardado, (list, tuple)) and len(guardado) == 2:
+        if isinstance(guardado, (list, tuple)) and len(guardado) >= 2:
             desde, hasta = guardado[0] or "", guardado[1] or ""
+            # Formato antiguo (solo desde/hasta): se asume sin filtrar.
+            solo_pendientes = bool(guardado[2]) if len(guardado) > 2 else False
     d, h = _rango_movimientos(desde, hasta)
-    request.session[clave_filtro] = [d, h]
+    request.session[clave_filtro] = [d, h, solo_pendientes]
     conn = db.get_conn()
     try:
-        filas = db.facturas_con_pago_en_rango(conn, tipo=cfg["tipo"], desde=d, hasta=h)
+        filas = _filas_de_lista(conn, seccion, d, h, solo_pendientes)
         # Los totales y el conteo del encabezado ignoran rechazadas y anuladas
-        # (no se cobrarán/pagarán).
+        # (no se cobrarán/pagarán), y se calculan sobre lo que se está viendo:
+        # con el filtro puesto, son los totales de lo pendiente.
         vigentes = [f for f in filas if not f["fecha_reclamo"] and not f["anulada_por"]]
         total_monto = sum(f["total"] for f in vigentes)
         total_pendiente = sum(max(f["total"] - f["pagado"], 0) for f in vigentes)
@@ -983,7 +1005,7 @@ def _vista_lista(request: Request, seccion: str, desde: str = "", hasta: str = "
         {
             "request": request, "rut": client.rut, "anio": ANIO,
             "seccion": seccion, "cfg": cfg, "filas": filas,
-            "desde": d, "hasta": h,
+            "desde": d, "hasta": h, "solo_pendientes": solo_pendientes,
             "n_vigentes": len(vigentes), "n_rechazadas": n_rechazadas,
             "n_anuladas": n_anuladas,
             "total_monto": total_monto, "total_pendiente": total_pendiente,
@@ -1037,20 +1059,21 @@ def _render_detalle(request: Request, client, seccion: str, codigo: str,
     )
 
 
-def _pdf_gestion(request: Request, seccion: str, codigo: str):
-    """Devuelve el PDF del detalle de gestión de una factura (inline, para
-    abrirlo en el navegador): resumen + movimientos parciales + el PDF
-    original de la factura (obtenido en vivo desde el SII) + los adjuntos de
-    la gestión, todo anexado al final."""
-    client = _guard(request)
-    if not client:
-        return RedirectResponse("/", status_code=303)
+def _pdf_gestion_bytes(request: Request, client, seccion: str, codigo: str) -> bytes | None:
+    """Arma el PDF de gestión de una factura y lo devuelve en bytes: resumen +
+    movimientos parciales + el PDF original de la factura (copia local, o en
+    vivo desde el SII) + los adjuntos de la gestión, todo anexado al final.
+    None si la factura no existe.
+
+    Lo usan el botón "PDF" de cada fila (_pdf_gestion) y el botón "Descargar"
+    de la lista (_zip_gestiones), para que ambos entreguen exactamente el
+    mismo documento."""
     cfg = SECCIONES[seccion]
     conn = db.get_conn()
     try:
         f = db.factura_pago_por_codigo(conn, codigo)
         if not f:
-            return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
+            return None
         pagos = db.pagos_de_factura(conn, f["id"])
         adjuntos = db.adjuntos_de_factura(conn, f["id"])
     finally:
@@ -1099,7 +1122,76 @@ def _pdf_gestion(request: Request, seccion: str, codigo: str):
         data = exportar.anexar_pdf(data, factura_bytes)
     if adjuntos:
         data = exportar.anexar_archivos(data, adjuntos)
+    return data
+
+
+def _pdf_gestion(request: Request, seccion: str, codigo: str):
+    """PDF de gestión de una factura, inline para abrirlo en el navegador
+    (botón "PDF" de cada fila de la lista y del detalle)."""
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    data = _pdf_gestion_bytes(request, client, seccion, codigo)
+    if data is None:
+        return HTMLResponse("<p>Factura no encontrada.</p>", status_code=404)
     return Response(content=data, media_type="application/pdf")
+
+
+def _zip_gestiones(request: Request, seccion: str, desde: str, hasta: str,
+                   pendientes: str = ""):
+    """ZIP con el PDF de gestión de cada factura de la lista (botón
+    "Descargar" de Pago a proveedores / Ingresos).
+
+    Toma exactamente las filas que se están viendo en pantalla —mismo rango y
+    mismo check "Sólo Pendientes"— y arma para cada una el mismo PDF que el
+    botón "PDF" de su fila: resumen de la gestión, pagos/cobros parciales, la
+    factura original y los adjuntos. Se saltan las rechazadas y las anuladas,
+    que tampoco tienen botón "PDF" en la lista.
+
+    Ojo: la primera vez puede demorar, porque de las facturas que aún no
+    tienen copia local hay que bajar el original del SII (queda cacheado, así
+    que la segunda descarga del mismo rango es rápida).
+    """
+    client = _guard(request)
+    if not client:
+        return RedirectResponse("/", status_code=303)
+    solo_pendientes = bool((pendientes or "").strip())
+    d, h = _rango_movimientos(desde, hasta)
+    conn = db.get_conn()
+    try:
+        filas = _filas_de_lista(conn, seccion, d, h, solo_pendientes)
+    finally:
+        conn.close()
+    filas = [f for f in filas
+             if not f["fecha_reclamo"] and not f["anulada_por"] and f["codigo_sii"]]
+
+    docs: list[tuple[str, bytes]] = []
+    errores: list[str] = []
+    for f in filas:
+        etiqueta = f"{f['documento'] or ''} {f['folio'] or ''} · {f['razon_social'] or ''}".strip()
+        try:
+            data = _pdf_gestion_bytes(request, client, seccion, f["codigo_sii"])
+        except Exception as e:  # una factura mala no puede tumbar el ZIP entero
+            data = None
+            errores.append(f"{etiqueta} ({f['codigo_sii']}): {e}")
+        if data is None:
+            if not errores or not errores[-1].startswith(etiqueta):
+                errores.append(f"{etiqueta} ({f['codigo_sii']}): no se pudo generar")
+            continue
+        base = f"{f['fecha_emision'] or 'sin-fecha'}_{f['folio'] or ''}_{f['razon_social'] or ''}"
+        docs.append((base, data))
+
+    zip_bytes = exportar.construir_zip_gestiones(docs, errores)
+    sufijo = "_pendientes" if solo_pendientes else ""
+    nombre = f"Gestion_{seccion}_{d}_a_{h}{sufijo}.zip"
+    _log_evento(request, f"Descarga ZIP de gestión · {seccion} {d} a {h}"
+                         f"{' (solo pendientes)' if solo_pendientes else ''} · "
+                         f"{len(docs)} PDF")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
 
 
 def _guardar_fecha_tope(request: Request, seccion: str, codigo: str, fecha_tope: str):
@@ -1424,8 +1516,14 @@ def _eliminar_adjunto_factura(request: Request, seccion: str, codigo: str, adj_i
 # ---- Pago a proveedores (facturas recibidas) ----
 
 @app.get("/pagos/proveedores", response_class=HTMLResponse)
-def proveedores_lista(request: Request, desde: str = "", hasta: str = "", volver: str = ""):
-    return _vista_lista(request, "proveedores", desde, hasta, volver)
+def proveedores_lista(request: Request, desde: str = "", hasta: str = "", volver: str = "",
+                      pendientes: str = ""):
+    return _vista_lista(request, "proveedores", desde, hasta, volver, pendientes)
+
+
+@app.get("/pagos/proveedores/zip")
+def proveedores_zip(request: Request, desde: str = "", hasta: str = "", pendientes: str = ""):
+    return _zip_gestiones(request, "proveedores", desde, hasta, pendientes)
 
 
 @app.get("/pagos/proveedores/{codigo}", response_class=HTMLResponse)
@@ -1506,8 +1604,14 @@ def proveedores_eliminar_adjunto(request: Request, codigo: str, adj_id: int):
 # ---- Ingresos (facturas emitidas) ----
 
 @app.get("/pagos/ingresos", response_class=HTMLResponse)
-def ingresos_lista(request: Request, desde: str = "", hasta: str = "", volver: str = ""):
-    return _vista_lista(request, "ingresos", desde, hasta, volver)
+def ingresos_lista(request: Request, desde: str = "", hasta: str = "", volver: str = "",
+                   pendientes: str = ""):
+    return _vista_lista(request, "ingresos", desde, hasta, volver, pendientes)
+
+
+@app.get("/pagos/ingresos/zip")
+def ingresos_zip(request: Request, desde: str = "", hasta: str = "", pendientes: str = ""):
+    return _zip_gestiones(request, "ingresos", desde, hasta, pendientes)
 
 
 @app.get("/pagos/ingresos/{codigo}", response_class=HTMLResponse)
