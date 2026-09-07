@@ -673,6 +673,10 @@ def facturas_con_pago_en_rango(conn: sqlite3.Connection, tipo: str, desde: str, 
     """Igual que facturas_con_pago(), pero filtrando por la fecha de emisión
     de la factura (f.fecha_emision), no por la fecha de sus pagos."""
     marcadores = ",".join("?" * len(TIPOS_NO_PAGABLES))
+    # Orden por defecto de la lista (antes del click en un encabezado):
+    # por fecha de factura, la más reciente primero, en ambas secciones
+    # (Pago a proveedores e Ingresos) — a pedido de Christian, 2026-09-07.
+    orden = "f.fecha_emision DESC, f.folio DESC"
     return conn.execute(
         f"""
         SELECT f.id, f.codigo_sii, f.documento, f.folio, f.rut_contraparte,
@@ -694,7 +698,7 @@ def facturas_con_pago_en_rango(conn: sqlite3.Connection, tipo: str, desde: str, 
         WHERE f.tipo = ?
           AND (f.tipo_dte IS NULL OR f.tipo_dte NOT IN ({marcadores}))
           AND f.fecha_emision >= ? AND f.fecha_emision <= ?
-        ORDER BY f.fecha_pago_tope IS NULL, f.fecha_pago_tope ASC, f.folio DESC
+        ORDER BY {orden}
         """,
         (tipo, *TIPOS_NO_PAGABLES, desde, hasta),
     ).fetchall()
